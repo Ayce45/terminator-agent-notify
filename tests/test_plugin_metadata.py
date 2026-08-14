@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from tests.fakes.terminator_runtime import make_plugin, make_service
 
 
@@ -163,3 +165,16 @@ def test_partial_signal_registration_removes_the_first_match(tmp_path):
     assert bus.signal_receivers[0][2].removed is True
     assert plugin._notification_signal_matches == []
     assert plugin._notification_bus is None
+
+
+def test_get_focused_uuid_returns_the_focused_fake_terminal(tmp_path, monkeypatch):
+    service, _notifications, _state = make_service(tmp_path)
+    focused = SimpleNamespace(uuid="urn:uuid:focused-pane", vte=SimpleNamespace(has_focus=lambda: True))
+    unfocused = SimpleNamespace(uuid="urn:uuid:other-pane", vte=SimpleNamespace(has_focus=lambda: False))
+    monkeypatch.setitem(
+        service.GetFocusedUUID.__globals__,
+        "Terminator",
+        lambda: SimpleNamespace(terminals=[unfocused, focused]),
+    )
+
+    assert service.GetFocusedUUID() == "urn:uuid:focused-pane"

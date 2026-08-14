@@ -107,9 +107,11 @@ def _load_objects(path):
     objects = []
     for line in lines[-60:]:
         try:
-            objects.append(json.loads(line))
+            value = json.loads(line)
         except json.JSONDecodeError:
-            pass
+            continue
+        if isinstance(value, dict):
+            objects.append(value)
     return objects
 
 
@@ -191,7 +193,7 @@ def scan():
         try:
             if os.path.getmtime(filename) >= cutoff:
                 process(filename)
-        except OSError:
+        except Exception:
             continue
 
 

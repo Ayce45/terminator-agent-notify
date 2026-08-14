@@ -26,7 +26,7 @@ fi
 [ -n "$uuid" ] || exit 0
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-python3 - "$root" "$session_id" "$uuid" <<'PY'
+python3 - "$root" "$session_id" "$uuid" <<'PY' || true
 import sys
 
 sys.path.insert(0, sys.argv[1])
@@ -34,3 +34,4 @@ from core.runtime_state import RuntimeState
 
 RuntimeState().record_pane("claude", sys.argv[2], sys.argv[3])
 PY
+exit 0

@@ -198,6 +198,17 @@ class FocusService(dbus.service.Object):
                 return "x11-focus-failed %s" % exception
         return "wayland-present (no real raise possible)"
 
+    @dbus.service.method(BUS_NAME, in_signature="", out_signature="s")
+    def GetFocusedUUID(self):
+        """Return the UUID of Terminator's focused pane, if there is one."""
+        try:
+            for terminal in Terminator().terminals:
+                if terminal.vte.has_focus():
+                    return str(terminal.uuid)
+        except Exception as exception:
+            _log("GetFocusedUUID failed: %s" % exception)
+        return ""
+
     @dbus.service.method(BUS_NAME, in_signature="ss", out_signature="b")
     def SendKeys(self, uuid, keys):
         return self._send_keys(uuid, str(keys))
