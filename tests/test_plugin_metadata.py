@@ -89,6 +89,23 @@ def test_dismiss_request_retires_only_its_exact_request(tmp_path):
     assert state.consume_decision("codex", "s1", "r2") == "allow"
 
 
+def test_dismiss_request_retires_before_closing_notification(tmp_path):
+    service, notifications, state = make_service(tmp_path)
+    nid = service.notify("codex", "s1", "r1", "pane", "permission", PAYLOAD)
+    close = notifications.CloseNotification
+
+    def action_during_close(notification_id):
+        service.on_action(notification_id, "approve")
+        close(notification_id)
+
+    notifications.CloseNotification = action_during_close
+
+    service.DismissRequest("codex", "s1", "r1")
+
+    assert state.consume_decision("codex", "s1", "r1") is None
+    assert notifications.closed == [nid]
+
+
 def test_notification_closed_retires_request_and_late_action_is_harmless(tmp_path):
     service, _notifications, state = make_service(tmp_path)
     nid = service.notify("codex", "s1", "r1", "pane", "permission", PAYLOAD)
@@ -96,7 +113,19 @@ def test_notification_closed_retires_request_and_late_action_is_harmless(tmp_pat
     service.on_closed(nid, 2)
     service.on_action(nid, "approve")
 
+    assert state.consume_request_closed("codex", "s1", "r1") is True
     assert state.consume_decision("codex", "s1", "r1") is None
+
+
+def test_action_driven_close_does_not_mark_request_closed(tmp_path):
+    service, _notifications, state = make_service(tmp_path)
+    nid = service.notify("codex", "s1", "r1", "pane", "permission", PAYLOAD)
+
+    service.on_action(nid, "approve")
+    service.on_closed(nid, 3)
+
+    assert state.consume_decision("codex", "s1", "r1") == "allow"
+    assert state.consume_request_closed("codex", "s1", "r1") is False
 
 
 def test_session_dismissal_preserves_other_agent_namespace(tmp_path):

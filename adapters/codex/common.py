@@ -92,14 +92,15 @@ def _fallback_notification(title: str, body: str) -> None:
     if shutil.which("notify-send") is None:
         return
     try:
-        subprocess.run(
+        subprocess.Popen(
             ["notify-send", "--app-name=Codex", title, body],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=5,
-            check=False,
+            close_fds=True,
+            start_new_session=True,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError:
         pass
 
 

@@ -19,6 +19,17 @@ def test_decision_is_consumed_once(tmp_path):
     assert state.consume_decision("codex", "s1", "r1") is None
 
 
+def test_request_closed_marker_is_separate_and_consumed_once(tmp_path):
+    state = RuntimeState(tmp_path)
+    state.write_decision("codex", "s1", "r1", "allow")
+
+    state.write_request_closed("codex", "s1", "r1")
+
+    assert state.consume_request_closed("codex", "s1", "r1") is True
+    assert state.consume_request_closed("codex", "s1", "r1") is False
+    assert state.consume_decision("codex", "s1", "r1") == "allow"
+
+
 def test_invalid_decision_is_consumed_without_escaping_domain(tmp_path):
     state = RuntimeState(tmp_path)
     state.decision_path("codex", "s1", "r1").write_text("maybe", encoding="utf-8")

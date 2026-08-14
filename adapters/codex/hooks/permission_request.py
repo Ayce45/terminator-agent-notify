@@ -30,25 +30,12 @@ DEFAULT_TIMEOUT = 300.0
 MAX_POLL_INTERVAL = 0.1
 COMMAND_PREVIEW_LIMIT = 240
 INTERRUPT_SIGNALS = (signal.SIGINT, signal.SIGTERM)
-
-
-class HookInterrupted(Exception):
-    """Raised to leave the polling loop through its normal cleanup path."""
+_interrupted = False
 
 
 def _interrupt(_signum, _frame):
-    raise HookInterrupted
-
-
-def _defer_interrupts():
-    if hasattr(signal, "pthread_sigmask"):
-        return signal.pthread_sigmask(signal.SIG_BLOCK, INTERRUPT_SIGNALS)
-    return None
-
-
-def _restore_interrupts(previous_mask):
-    if previous_mask is not None:
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+    global _interrupted
+    _interrupted = True
 
 
 def _approval_timeout() -> float:
@@ -96,42 +83,51 @@ def run() -> dict | None:
     request_id = f"{turn_id}:{secrets.token_hex(16)}"
     title, body = _notification_text(event)
     registered = False
+    state = None
     try:
-        previous_mask = _defer_interrupts()
-        try:
-            registered = notify(
-                session_id,
-                request_id,
-                pane_for(session_id),
-                "permission",
-                title,
-                body,
-            )
-        finally:
-            _restore_interrupts(previous_mask)
+        registered = notify(
+            session_id,
+            request_id,
+            pane_for(session_id),
+            "permission",
+            title,
+            body,
+        )
         if not registered:
             return None
 
         state = RuntimeState()
         deadline = time.monotonic() + _approval_timeout()
         while True:
+            if _interrupted or time.monotonic() >= deadline:
+                return None
+            if state.consume_request_closed(AGENT, session_id, request_id):
+                return None
             decision = state.consume_decision(AGENT, session_id, request_id)
             if decision is not None:
-                return _decision_output(decision)
+                if not _interrupted and time.monotonic() <= deadline:
+                    return _decision_output(decision)
+                return None
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return None
             time.sleep(min(MAX_POLL_INTERVAL, remaining))
-    except (HookInterrupted, KeyboardInterrupt, OSError):
+    except (KeyboardInterrupt, OSError):
         return None
     finally:
         if registered:
-            for signal_number in INTERRUPT_SIGNALS:
-                signal.signal(signal_number, signal.SIG_IGN)
             dismiss_request(session_id, request_id)
+            if state is not None:
+                try:
+                    state.consume_decision(AGENT, session_id, request_id)
+                    state.consume_request_closed(AGENT, session_id, request_id)
+                except OSError:
+                    pass
 
 
 def main() -> int:
+    global _interrupted
+    _interrupted = False
     for signal_number in INTERRUPT_SIGNALS:
         signal.signal(signal_number, _interrupt)
     result = run()

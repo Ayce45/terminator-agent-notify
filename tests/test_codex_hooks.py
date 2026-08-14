@@ -51,8 +51,42 @@ elif method.endswith(".Notify"):
         if os.environ.get("GDBUS_STALE_DECISION") == "1":
             request_id += "-stale"
         RuntimeState().write_decision(values[0], values[1], request_id, decision)
+    if os.environ.get("GDBUS_RAW_DECISION"):
+        RuntimeState().decision_path(values[0], values[1], values[2]).write_text(
+            os.environ["GDBUS_RAW_DECISION"], encoding="utf-8"
+        )
+    if os.environ.get("GDBUS_CLOSE_REQUEST") == "1":
+        RuntimeState().write_request_closed(values[0], values[1], values[2])
+    delay = float(os.environ.get("GDBUS_DELAY_NOTIFY", "0"))
+    if delay:
+        import time
+        time.sleep(delay)
     print("(uint32 17,)")
 else:
+    if method.endswith(".DismissRequest") and os.environ.get(
+        "GDBUS_DECISION_ON_DISMISS"
+    ):
+        RuntimeState().write_decision(
+            values[0],
+            values[1],
+            values[2],
+            os.environ["GDBUS_DECISION_ON_DISMISS"],
+        )
+    delay = (
+        float(os.environ.get("GDBUS_DELAY_DISMISS", "0"))
+        if method.endswith(".DismissRequest")
+        else 0
+    )
+    if delay:
+        import time
+        time.sleep(delay)
+    if method.endswith(".DismissRequest") and os.environ.get(
+        "GDBUS_BREAK_STATE_ON_DISMISS"
+    ) == "1":
+        state = RuntimeState()
+        moved = state.root.with_name(state.root.name + "-moved")
+        os.replace(state.root, moved)
+        state.root.write_text("not a directory", encoding="utf-8")
     print("(true,)")
 """,
         encoding="utf-8",
@@ -165,6 +199,69 @@ def test_timeout_returns_no_decision_and_dismisses_exact_request(hook_environmen
     assert dismiss == notify[:3]
 
 
+def test_notification_close_returns_promptly_without_decision(hook_environment):
+    environment, calls_path = hook_environment
+    environment["GDBUS_CLOSE_REQUEST"] = "1"
+
+    started = time.monotonic()
+    assert _run_permission(environment, timeout=30) is None
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1
+    calls = [_method_values(call) for call in _calls(calls_path)]
+    notify = next(values for method, values in calls if method.endswith(".Notify"))
+    dismiss = next(
+        values for method, values in calls if method.endswith(".DismissRequest")
+    )
+    assert dismiss == notify[:3]
+    assert RuntimeState().consume_request_closed(*dismiss) is False
+
+
+def test_expired_decision_is_discarded_and_removed(hook_environment):
+    environment, calls_path = hook_environment
+    environment["GDBUS_DECISION"] = "allow"
+
+    assert _run_permission(environment, timeout=0) is None
+
+    notify = next(
+        _method_values(call)[1]
+        for call in _calls(calls_path)
+        if _method_values(call)[0].endswith(".Notify")
+    )
+    assert RuntimeState().consume_decision(*notify[:3]) is None
+
+
+def test_decision_racing_with_timeout_cleanup_is_removed(hook_environment):
+    environment, calls_path = hook_environment
+    environment["GDBUS_DECISION_ON_DISMISS"] = "allow"
+
+    assert _run_permission(environment, timeout=0) is None
+
+    dismiss = next(
+        _method_values(call)[1]
+        for call in _calls(calls_path)
+        if _method_values(call)[0].endswith(".DismissRequest")
+    )
+    assert RuntimeState().consume_decision(*dismiss) is None
+
+
+def test_cleanup_state_failure_still_exits_successfully_without_decision(
+    hook_environment,
+):
+    environment, _calls_path = hook_environment
+    environment["GDBUS_BREAK_STATE_ON_DISMISS"] = "1"
+
+    result = _run_hook(
+        "permission_request.py",
+        _fixture("permission_bash.json"),
+        {**environment, "CODEX_NOTIFY_APPROVAL_TIMEOUT": "0"},
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
 @pytest.mark.parametrize("input_text", ["not json", "[]", "{}", '{"session_id": 7}'])
 def test_malformed_input_exits_successfully_without_side_effects(
     hook_environment, input_text
@@ -191,6 +288,20 @@ def test_notification_failure_returns_no_decision_without_cleanup_of_unregistere
     methods = [_method_values(call)[0] for call in _calls(calls_path)]
     assert sum(method.endswith(".Notify") for method in methods) == 1
     assert not any(method.endswith(".DismissRequest") for method in methods)
+
+
+def test_malformed_decision_is_discarded_without_stdout(hook_environment):
+    environment, calls_path = hook_environment
+    environment["GDBUS_RAW_DECISION"] = "approve"
+
+    assert _run_permission(environment, timeout=0.2) is None
+
+    notify = next(
+        _method_values(call)[1]
+        for call in _calls(calls_path)
+        if _method_values(call)[0].endswith(".Notify")
+    )
+    assert RuntimeState().consume_decision(*notify[:3]) is None
 
 
 def test_stale_decision_cannot_authorize_current_request(hook_environment):
@@ -328,6 +439,24 @@ def test_stop_posts_completion_notification(hook_environment):
     }
 
 
+def test_stop_notification_fallback_is_fire_and_forget(hook_environment):
+    environment, calls_path = hook_environment
+    environment["GDBUS_FAIL_NOTIFY"] = "1"
+    notify_send = calls_path.parent / "notify-send"
+    notify_send.write_text(
+        "#!/usr/bin/env python3\nimport time\ntime.sleep(1)\n", encoding="utf-8"
+    )
+    notify_send.chmod(0o755)
+
+    started = time.monotonic()
+    result = _run_hook(
+        "stop.py", json.dumps({"session_id": "codex-session-4"}), environment
+    )
+
+    assert result.returncode == 0
+    assert time.monotonic() - started < 0.5
+
+
 def test_user_prompt_submit_dismisses_session_notifications(hook_environment):
     environment, calls_path = hook_environment
 
@@ -383,6 +512,51 @@ def test_signal_interrupt_exits_successfully_and_dismisses_exact_request(
 
     assert process.returncode == 0
     assert stdout == stderr == ""
+    calls = [_method_values(call) for call in _calls(calls_path)]
+    notify = next(values for method, values in calls if method.endswith(".Notify"))
+    dismiss = next(
+        values for method, values in calls if method.endswith(".DismissRequest")
+    )
+    assert dismiss == notify[:3]
+
+
+def test_repeated_signals_during_registration_still_cleanup_exact_request(
+    hook_environment,
+):
+    environment, calls_path = hook_environment
+    environment["CODEX_NOTIFY_APPROVAL_TIMEOUT"] = "30"
+    environment["GDBUS_DELAY_NOTIFY"] = "0.2"
+    environment["GDBUS_DELAY_DISMISS"] = "0.2"
+    process = subprocess.Popen(
+        [sys.executable, str(HOOKS / "permission_request.py")],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=environment,
+    )
+    assert process.stdin is not None
+    process.stdin.write(_fixture("permission_bash.json"))
+    process.stdin.close()
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if any(
+            _method_values(call)[0].endswith(".Notify") for call in _calls(calls_path)
+        ):
+            break
+        time.sleep(0.01)
+    else:
+        process.kill()
+        raise AssertionError("permission notification was not registered")
+
+    process.send_signal(signal.SIGTERM)
+    process.send_signal(signal.SIGINT)
+    process.wait(timeout=5)
+
+    assert process.returncode == 0
+    assert process.stdout.read() == ""
+    assert process.stderr.read() == ""
     calls = [_method_values(call) for call in _calls(calls_path)]
     notify = next(values for method, values in calls if method.endswith(".Notify"))
     dismiss = next(

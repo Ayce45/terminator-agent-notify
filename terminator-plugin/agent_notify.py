@@ -351,11 +351,11 @@ class FocusService(dbus.service.Object):
         return True
 
     def _close_and_untrack(self, notification_id):
+        self._untrack(notification_id)
         try:
             self._notifs.CloseNotification(dbus.UInt32(notification_id))
         except Exception:
             pass
-        self._untrack(notification_id)
 
     def dismiss_pane(self, pane_uuid):
         """Clear informational notices on focus, never pending approvals.
@@ -398,7 +398,19 @@ class FocusService(dbus.service.Object):
         self._close_and_untrack(notification_id)
 
     def on_closed(self, notification_id, _reason):
-        self._untrack(int(notification_id))
+        notification_id = int(notification_id)
+        metadata = self._notif_meta.get(notification_id)
+        try:
+            if (
+                metadata is not None
+                and metadata[0] == "codex"
+                and metadata[4] == "permission"
+            ):
+                self._state.write_request_closed(metadata[0], metadata[1], metadata[2])
+        except (OSError, ValueError) as exception:
+            _log("request closure state failed: %s" % exception)
+        finally:
+            self._untrack(notification_id)
 
 
 class AgentNotify(Plugin):

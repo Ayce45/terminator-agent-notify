@@ -58,6 +58,14 @@ class RuntimeState:
         self._ensure_directory(directory)
         return directory / f"{_digest(request_id)}.decision"
 
+    def request_closed_path(
+        self, agent: str, session_id: str, request_id: str
+    ) -> Path:
+        self._check_agent(agent)
+        directory = self.root / "request-closed" / _digest(agent) / _digest(session_id)
+        self._ensure_directory(directory)
+        return directory / f"{_digest(request_id)}.closed"
+
     def record_pane(self, agent: str, session_id: str, pane: str) -> None:
         self._atomic_write(self.pane_path(agent, session_id), pane)
 
@@ -89,6 +97,30 @@ class RuntimeState:
             except UnicodeDecodeError:
                 return None
             return decision if decision in _DECISIONS else None
+        finally:
+            try:
+                claimed.unlink()
+            except FileNotFoundError:
+                pass
+
+    def write_request_closed(
+        self, agent: str, session_id: str, request_id: str
+    ) -> None:
+        self._atomic_write(
+            self.request_closed_path(agent, session_id, request_id), "closed"
+        )
+
+    def consume_request_closed(
+        self, agent: str, session_id: str, request_id: str
+    ) -> bool:
+        path = self.request_closed_path(agent, session_id, request_id)
+        claimed = path.with_name(f".{path.name}.{uuid.uuid4().hex}.consumed")
+        try:
+            os.replace(path, claimed)
+        except FileNotFoundError:
+            return False
+        try:
+            return True
         finally:
             try:
                 claimed.unlink()
