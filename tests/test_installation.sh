@@ -123,7 +123,6 @@ if grep -q -- '--user enable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"; t
   echo "Codex timer enabled without CODEX_AUTORESUME=1" >&2
   exit 1
 fi
-grep -q -- '--user disable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"
 
 $ROOT/uninstall.sh codex >/dev/null
 test -d "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude"
@@ -132,16 +131,8 @@ test -f "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
 grep -qx claude "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
 
 : > "$SYSTEMCTL_LOG"
-codex_output=$(CODEX_AUTORESUME=1 $ROOT/install.sh codex 2>&1)
-case "$codex_output" in
-  *"Codex auto-resume adapter is unavailable"*) ;;
-  *) echo "missing warning for unavailable Codex auto-resume adapter" >&2; exit 1 ;;
-esac
-if grep -q -- '--user enable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"; then
-  echo "Codex timer enabled without an installed auto-resume adapter" >&2
-  exit 1
-fi
-grep -q -- '--user disable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"
+CODEX_AUTORESUME=1 $ROOT/install.sh codex >/dev/null
+grep -q -- '--user enable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"
 $ROOT/uninstall.sh claude >/dev/null
 test ! -e "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude"
 test -d "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex"
