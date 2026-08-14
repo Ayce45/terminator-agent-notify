@@ -1,0 +1,11 @@
+{
+  "session_id": "codex-session-1",
+  "turn_id": "turn-42",
+  "hook_event_name": "PermissionRequest",
+  "cwd": "/work/project",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git status --short"
+  },
+  "description": "Inspect the working tree"
+}
