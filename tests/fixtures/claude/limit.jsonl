@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I will retry after the limit resets."}]},"timestamp":"2026-08-14T13:00:00+00:00","session_id":"claude-session-429"}
+{"type":"assistant","isApiErrorMessage":true,"apiErrorStatus":"429","message":{"role":"assistant","content":[{"type":"text","text":"You've hit your usage limit. Your limit resets 1:05pm."}]},"timestamp":"2026-08-14T13:00:00+00:00","session_id":"claude-session-429"}

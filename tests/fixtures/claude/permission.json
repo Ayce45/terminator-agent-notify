@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "Notification",
+  "session_id": "claude-session-1",
+  "cwd": "/workspaces/important-project",
+  "message": "Claude Code needs your permission to run a command."
+}
