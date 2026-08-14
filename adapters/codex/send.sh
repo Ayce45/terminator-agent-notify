@@ -40,7 +40,7 @@ send_reply=$(gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
   --method "${BUS}.SendKeys" "$pane" "${message}"$'\r')
 [ "$send_reply" = "(true,)" ] || { echo "SendKeys was not acknowledged" >&2; exit 1; }
 
-if [ "$notify" -eq 1 ]; then
+if [ "$notify" -eq 1 ] && [ "${TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS:-1}" != "0" ]; then
   payload=$(python3 - "$message" <<'PY'
 import json
 import sys
@@ -52,8 +52,12 @@ PY
       --method "${BUS}.Notify" "codex" "$session" "" "$pane" "waiting" "$payload" \
       2>/dev/null || true)
   if ! [[ "$notify_reply" =~ ^\(uint32[[:space:]]+[1-9][0-9]*,\)$ ]]; then
+    notify_args=(--app-name="Codex")
+    if [ -n "${TERMINATOR_AGENT_NOTIFY_EXPIRY_MS:-}" ]; then
+      notify_args+=(--expire-time="$TERMINATOR_AGENT_NOTIFY_EXPIRY_MS")
+    fi
     command -v notify-send >/dev/null 2>&1 && \
-      notify-send --app-name="Codex" "Codex — relancé automatiquement" \
+      notify-send "${notify_args[@]}" "Codex — relancé automatiquement" \
         "« ${message} » envoyé après la fin de la limite." >/dev/null 2>&1 || true
   fi
 fi

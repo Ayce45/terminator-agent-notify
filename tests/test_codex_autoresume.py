@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import os
 import subprocess
 from datetime import datetime, timezone
@@ -43,6 +44,17 @@ def test_disabled_mode_never_schedules(tmp_path, monkeypatch):
     assert scheduled == []
 
 
+def test_generic_quiet_log_level_suppresses_codex_diagnostics(
+    monkeypatch, capsys
+):
+    module = _load_autoresume()
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_LOG_LEVEL", "quiet")
+
+    module._log("transcript unavailable")
+
+    assert capsys.readouterr().err == ""
+
+
 def test_unambiguous_future_limit_schedules_once(tmp_path, monkeypatch):
     """Dropping deduplication would create multiple delayed resumes for one reset."""
     module = _load_autoresume()
@@ -64,7 +76,7 @@ def test_unambiguous_future_limit_schedules_once(tmp_path, monkeypatch):
             "systemd-run",
             "--user",
             "--collect",
-            "--unit=codex-autoresume-57b756c6-1786712700",
+            "--unit=codex-autoresume-57b756c6e2183717-1786712700",
             "--on-active=300s",
             "--timer-property=AccuracySec=1s",
             "--description=Codex auto-resume after usage limit (continue)",
@@ -134,6 +146,64 @@ def test_recovered_limit_never_schedules(tmp_path, monkeypatch):
         FIXTURES / "limit_recovered.jsonl", clock=lambda: NOW, scheduler=scheduled.append
     ) is False
     assert scheduled == []
+
+
+def test_nested_status_only_limit_with_offset_reset_schedules(tmp_path, monkeypatch):
+    """Requiring rate-limit prose would miss the structured Codex status signal."""
+    module = _load_autoresume()
+    _environment(tmp_path, monkeypatch)
+    scheduled = []
+
+    assert module.process(
+        FIXTURES / "limit_status_only_nested.jsonl",
+        clock=lambda: NOW,
+        scheduler=scheduled.append,
+    ) is True
+    assert scheduled[0][3].startswith("--unit=codex-autoresume-")
+    assert scheduled[0][4] == "--on-active=300s"
+    assert scheduled[0][-5:] == [
+        "--session",
+        "codex-session-nested",
+        "--message",
+        "continue",
+        "--notify",
+    ]
+
+
+def test_near_match_status_does_not_count_as_rate_limit():
+    """Substring matching could arm a resume for an unrelated custom status."""
+    module = _load_autoresume()
+
+    assert module._has_limit_signal({"status": "not_rate_limit_exceeded"}) is False
+
+
+def test_old_successful_markers_are_pruned_but_recent_markers_remain(
+    tmp_path, monkeypatch
+):
+    """Permanent successful markers would grow runtime state without bound."""
+    module = _load_autoresume()
+    _environment(tmp_path, monkeypatch)
+    runtime = RuntimeState()
+    directory = runtime.root / "autoresume" / hashlib.sha256(b"codex").hexdigest()
+    directory.mkdir(mode=0o700, parents=True)
+    old_epoch = int(NOW.timestamp()) - 8 * 24 * 60 * 60
+    recent_epoch = int(NOW.timestamp()) - 60
+    old = directory / f"{'a' * 64}-{old_epoch}.scheduled"
+    recent = directory / f"{'b' * 64}-{recent_epoch}.scheduled"
+    old.touch()
+    recent.touch()
+    no_limit = tmp_path / "no-limit.jsonl"
+    no_limit.write_text('{"event":{"status":"ok"}}\n', encoding="utf-8")
+
+    module.process(
+        no_limit,
+        clock=lambda: NOW,
+        scheduler=lambda _command: True,
+        state=runtime,
+    )
+
+    assert not old.exists()
+    assert recent.exists()
 
 
 def test_far_future_or_overflowing_reset_never_schedules(tmp_path, monkeypatch):
@@ -281,3 +351,49 @@ def test_zero_notification_reply_uses_fallback(tmp_path, monkeypatch):
     )
 
     assert fallback.exists()
+
+
+def test_generic_notification_controls_reach_codex_send_fallback(
+    tmp_path, monkeypatch
+):
+    calls = _send_environment(tmp_path, monkeypatch)
+    fallback = tmp_path / "notify-send.calls"
+    notify_send = tmp_path / "notify-send"
+    notify_send.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$NOTIFY_SEND_CALLS"\n',
+        encoding="utf-8",
+    )
+    notify_send.chmod(0o755)
+    monkeypatch.setenv("GDBUS_NOTIFY_ID", "0")
+    monkeypatch.setenv("NOTIFY_SEND_CALLS", str(fallback))
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_EXPIRY_MS", "4321")
+
+    subprocess.run(
+        [str(ADAPTER / "send.sh"), "--session", "codex-session-limit", "--notify"],
+        env=os.environ.copy(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "--expire-time=4321" in fallback.read_text(encoding="utf-8")
+    assert any(".Notify" in call for call in calls.read_text(encoding="utf-8").splitlines())
+
+
+def test_generic_notification_disable_keeps_codex_send_but_skips_notice(
+    tmp_path, monkeypatch
+):
+    calls = _send_environment(tmp_path, monkeypatch)
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", "0")
+
+    subprocess.run(
+        [str(ADAPTER / "send.sh"), "--session", "codex-session-limit", "--notify"],
+        env=os.environ.copy(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    recorded = calls.read_text(encoding="utf-8")
+    assert ".SendKeys" in recorded
+    assert ".Notify" not in recorded

@@ -90,8 +90,8 @@ def test_uninstall_removes_only_owned_entries(tmp_path, agent, filename):
     )
 
 
-def test_codex_permission_hook_outlives_default_approval_wait(tmp_path):
-    """A hook timeout shorter than the 300-second approval wait breaks this test."""
+def test_codex_permission_hook_leaves_cleanup_margin_after_maximum_wait(tmp_path):
+    """A host deadline must cover registration, waiting, cleanup, and real margin."""
     configure = load_configurator("codex")
     config_path = tmp_path / "hooks.json"
 
@@ -104,7 +104,14 @@ def test_codex_permission_hook_outlives_default_approval_wait(tmp_path):
         if entry["description"].startswith(MARKER)
     ]
     assert len(owned) == 1
-    assert owned[0]["hooks"][0]["timeout"] >= 300
+    host_timeout = owned[0]["hooks"][0]["timeout"]
+    required_runtime = (
+        configure.MAX_APPROVAL_WAIT_SECONDS
+        + 2 * configure.DBUS_CALL_BUDGET_SECONDS
+        + configure.APPROVAL_CLEANUP_MARGIN_SECONDS
+    )
+    assert configure.MAX_APPROVAL_WAIT_SECONDS <= 300
+    assert host_timeout > required_runtime
 
 
 @pytest.mark.parametrize(

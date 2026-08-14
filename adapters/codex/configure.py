@@ -15,7 +15,18 @@ from pathlib import Path
 
 
 MARKER = "terminator-agent-notify:"
-PERMISSION_HOOK_TIMEOUT = 310
+# PermissionRequest performs one bounded D-Bus registration call before waiting
+# and one bounded dismissal call during cleanup.  Keep the Codex host deadline
+# strictly beyond both calls, the maximum local wait, and explicit cleanup time.
+MAX_APPROVAL_WAIT_SECONDS = 300
+DBUS_CALL_BUDGET_SECONDS = 5
+APPROVAL_CLEANUP_MARGIN_SECONDS = 5
+PERMISSION_HOOK_TIMEOUT = (
+    MAX_APPROVAL_WAIT_SECONDS
+    + 2 * DBUS_CALL_BUDGET_SECONDS
+    + APPROVAL_CLEANUP_MARGIN_SECONDS
+    + 1
+)
 
 
 def _owned(entry: object) -> bool:

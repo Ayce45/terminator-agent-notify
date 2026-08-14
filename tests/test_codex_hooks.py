@@ -162,12 +162,16 @@ def _run_permission(environment, fixture="permission_bash.json", timeout=None):
     ("configured_value", "expected"),
     [
         ("0", 0.0),
+        ("300", 300.0),
+        ("301", 300.0),
+        ("999999", 300.0),
         ("-1", 300.0),
         ("NaN", 300.0),
         ("inf", 300.0),
+        ("not-a-number", 300.0),
     ],
 )
-def test_approval_timeout_rejects_invalid_values_but_allows_zero(
+def test_approval_timeout_clamps_large_values_and_rejects_invalid_values(
     monkeypatch, configured_value, expected
 ):
     monkeypatch.setenv("CODEX_NOTIFY_APPROVAL_TIMEOUT", configured_value)
@@ -515,6 +519,22 @@ def test_stop_posts_completion_notification(hook_environment):
         "title": "Codex — project",
         "body": "Task complete — waiting for your next instruction.",
     }
+
+
+def test_generic_notification_disable_skips_codex_notification_boundaries(
+    hook_environment,
+):
+    environment, calls_path = hook_environment
+    environment["TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS"] = "0"
+
+    result = _run_hook(
+        "stop.py",
+        json.dumps({"session_id": "codex-session-disabled"}),
+        environment,
+    )
+
+    assert result.returncode == 0
+    assert _calls(calls_path) == []
 
 
 def test_stop_notification_fallback_is_fire_and_forget(hook_environment):

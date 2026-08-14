@@ -2,9 +2,12 @@ import importlib.util
 import json
 import os
 import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from core.runtime_state import RuntimeState
 
@@ -28,7 +31,7 @@ def _fake_gdbus(tmp_path):
     calls = tmp_path / "gdbus.calls"
     executable = tmp_path / "gdbus"
     executable.write_text(
-        "#!/usr/bin/env bash\nprintf '%q ' \"$@\" >> \"$GDBUS_CALLS\"\nprintf '\\n' >> \"$GDBUS_CALLS\"\nif [[ \"$*\" == *'.Notify'* && \"${GDBUS_FAIL_NOTIFY:-0}\" = 1 ]]; then exit 1; fi\nprintf '(uint32 1,)\\n'\n",
+        "#!/usr/bin/env bash\nprintf '%q ' \"$@\" >> \"$GDBUS_CALLS\"\nprintf '\\n' >> \"$GDBUS_CALLS\"\nif [[ \"$*\" == *'.Notify'* && \"${GDBUS_FAIL_NOTIFY:-0}\" = 1 ]]; then exit 1; fi\nif [[ \"$*\" == *'.SendKeys'* ]]; then printf '%s\\n' \"${GDBUS_SEND_REPLY:-(true,)}\"; elif [[ \"$*\" == *'.Notify'* ]]; then printf '%s\\n' \"${GDBUS_NOTIFY_REPLY:-(uint32 1,)}\"; else printf '(true,)\\n'; fi\n",
         encoding="utf-8",
     )
     executable.chmod(0o755)
@@ -37,6 +40,7 @@ def _fake_gdbus(tmp_path):
 
 def _hook_environment(tmp_path, monkeypatch):
     calls = _fake_gdbus(tmp_path)
+    monkeypatch.delenv("TERMINATOR_UUID", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
     monkeypatch.setenv("GDBUS_CALLS", str(calls))
@@ -44,7 +48,7 @@ def _hook_environment(tmp_path, monkeypatch):
     return calls
 
 
-def _run_hook(name, payload, environment, check=True):
+def _run_hook(name, payload, environment, check=True, timeout=5):
     return subprocess.run(
         [str(ADAPTER / "hooks" / name)],
         input=json.dumps(payload),
@@ -52,6 +56,7 @@ def _run_hook(name, payload, environment, check=True):
         env=environment,
         check=check,
         capture_output=True,
+        timeout=timeout,
     )
 
 
@@ -76,6 +81,21 @@ def test_stop_notification_normalizes_to_complete(tmp_path, monkeypatch):
 
     call = calls.read_text(encoding="utf-8")
     assert ".Notify claude claude-session-stop '' claude-pane complete" in call
+
+
+def test_generic_notification_disable_skips_claude_notification_boundaries(
+    tmp_path, monkeypatch
+):
+    calls = _hook_environment(tmp_path, monkeypatch)
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", "0")
+
+    _run_hook(
+        "notify-waiting.sh",
+        {"session_id": "disabled-session"},
+        os.environ.copy(),
+    )
+
+    assert not calls.exists()
 
 
 def test_session_start_records_pane_in_the_claude_namespace(tmp_path, monkeypatch):
@@ -104,6 +124,27 @@ def test_session_start_ignores_runtime_state_failures(tmp_path, monkeypatch):
     )
 
     assert result.returncode == 0
+
+
+def test_session_start_prefers_shared_focused_uuid_before_legacy_service(
+    tmp_path, monkeypatch
+):
+    calls = _hook_environment(tmp_path, monkeypatch)
+    shared_gdbus = tmp_path / "gdbus"
+    shared_gdbus.write_text(
+        "#!/usr/bin/env bash\nprintf '%q ' \"$@\" >> \"$GDBUS_CALLS\"\nprintf '\\n' >> \"$GDBUS_CALLS\"\nif [[ \"$*\" == *'.GetFocusedUUID'* ]]; then printf \"('urn:uuid:11111111-2222-3333-4444-555555555555',)\\n\"; else exit 9; fi\n",
+        encoding="utf-8",
+    )
+    shared_gdbus.chmod(0o755)
+
+    _run_hook("session-start.sh", {"session_id": "shared-focus"}, os.environ.copy())
+
+    assert RuntimeState().read_pane("claude", "shared-focus") == (
+        "urn:uuid:11111111-2222-3333-4444-555555555555"
+    )
+    recorded = calls.read_text(encoding="utf-8")
+    assert ".GetFocusedUUID" in recorded
+    assert ".ListNames" not in recorded
 
 
 def test_cleanup_dismisses_only_the_claude_session(tmp_path, monkeypatch):
@@ -247,6 +288,21 @@ def test_armed_resume_notification_uses_the_claude_namespace(tmp_path, monkeypat
     ]
 
 
+def test_generic_notification_disable_skips_claude_autoresume_notice(
+    tmp_path, monkeypatch
+):
+    module = _load_autoresume()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", "0")
+    RuntimeState().record_pane("claude", "disabled-session", "claude-pane")
+    calls = []
+    monkeypatch.setattr(module.subprocess, "run", lambda command, **_kwargs: calls.append(command))
+
+    module._notify("disabled-session", "Resume armed", "Scheduled")
+
+    assert calls == []
+
+
 def test_resume_send_uses_the_dialog_safe_key_sequence(tmp_path, monkeypatch):
     calls = _hook_environment(tmp_path, monkeypatch)
     sleeps = tmp_path / "sleeps"
@@ -267,6 +323,56 @@ def test_resume_send_uses_the_dialog_safe_key_sequence(tmp_path, monkeypatch):
     sent = calls.read_text(encoding="utf-8").splitlines()
     assert [line.split()[-1] for line in sent] == ["$'\\r'", "continue", "$'\\r'", "$'\\r'"]
     assert sleeps.read_text(encoding="utf-8").splitlines() == ["2", "1", "1"]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    ["(false,)", "false", "(true, )", "(uint32 1,)", "malformed"],
+)
+def test_send_rejects_every_sendkeys_reply_except_exact_true_tuple(
+    tmp_path, monkeypatch, reply
+):
+    _hook_environment(tmp_path, monkeypatch)
+    monkeypatch.setenv("GDBUS_SEND_REPLY", reply)
+    RuntimeState().record_pane("claude", "send-session", "claude-pane")
+
+    result = subprocess.run(
+        [str(ADAPTER / "send.sh"), "--session", "send-session", "--notify"],
+        env=os.environ.copy(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+
+
+@pytest.mark.parametrize("reply", ["(uint32 0,)", "(false,)", "(uint32 1, )", "bad"])
+def test_send_notify_uses_fallback_unless_reply_is_positive_uint32(
+    tmp_path, monkeypatch, reply
+):
+    _hook_environment(tmp_path, monkeypatch)
+    fallback = tmp_path / "notify-send.calls"
+    notify_send = tmp_path / "notify-send"
+    notify_send.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$NOTIFY_SEND_CALLS"\n',
+        encoding="utf-8",
+    )
+    notify_send.chmod(0o755)
+    monkeypatch.setenv("GDBUS_NOTIFY_REPLY", reply)
+    monkeypatch.setenv("NOTIFY_SEND_CALLS", str(fallback))
+    RuntimeState().record_pane("claude", "notify-session", "claude-pane")
+
+    result = subprocess.run(
+        [str(ADAPTER / "send.sh"), "--session", "notify-session", "--notify"],
+        env=os.environ.copy(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert fallback.exists()
 
 
 def test_send_resolves_and_targets_the_plugin_focused_pane(tmp_path, monkeypatch):
@@ -312,3 +418,93 @@ def test_send_falls_back_to_notify_send_when_the_service_is_unavailable(
     )
 
     assert "Claude Code — relancé automatiquement" in fallback.read_text(encoding="utf-8")
+
+
+def test_generic_expiry_reaches_claude_notify_send_fallback(tmp_path, monkeypatch):
+    _hook_environment(tmp_path, monkeypatch)
+    fallback = tmp_path / "notify-send.calls"
+    notify_send = tmp_path / "notify-send"
+    notify_send.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$NOTIFY_SEND_CALLS"\n',
+        encoding="utf-8",
+    )
+    notify_send.chmod(0o755)
+    monkeypatch.setenv("GDBUS_FAIL_NOTIFY", "1")
+    monkeypatch.setenv("NOTIFY_SEND_CALLS", str(fallback))
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_EXPIRY_MS", "4321")
+
+    _run_hook(
+        "notify-waiting.sh",
+        {"session_id": "expiry-session"},
+        os.environ.copy(),
+    )
+
+    assert "--expire-time=4321" in fallback.read_text(encoding="utf-8")
+
+
+def test_generic_notification_disable_keeps_send_but_skips_notice(
+    tmp_path, monkeypatch
+):
+    calls = _hook_environment(tmp_path, monkeypatch)
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", "0")
+    RuntimeState().record_pane("claude", "disabled-send", "claude-pane")
+
+    result = subprocess.run(
+        [str(ADAPTER / "send.sh"), "--session", "disabled-send", "--notify"],
+        env=os.environ.copy(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    recorded = calls.read_text(encoding="utf-8")
+    assert ".SendKeys" in recorded
+    assert ".Notify" not in recorded
+
+
+@pytest.mark.parametrize(
+    ("script", "payload"),
+    [
+        ("session-start.sh", {"session_id": "hung-session"}),
+        ("notify-cleanup.sh", {"session_id": "hung-session"}),
+        ("notify-waiting.sh", {"session_id": "hung-session"}),
+    ],
+)
+def test_claude_hooks_bound_hung_desktop_commands(
+    tmp_path, monkeypatch, script, payload
+):
+    _hook_environment(tmp_path, monkeypatch)
+    for command in ("gdbus", "notify-send"):
+        executable = tmp_path / command
+        executable.write_text("#!/usr/bin/env bash\nsleep 30\n", encoding="utf-8")
+        executable.chmod(0o755)
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_COMMAND_TIMEOUT_SECONDS", "0.1")
+
+    started = time.monotonic()
+    result = _run_hook(script, payload, os.environ.copy(), check=False, timeout=2)
+
+    assert result.returncode == 0
+    assert time.monotonic() - started < 1.5
+
+
+def test_claude_send_bounds_hung_sendkeys_call(tmp_path, monkeypatch):
+    _hook_environment(tmp_path, monkeypatch)
+    gdbus = tmp_path / "gdbus"
+    gdbus.write_text("#!/usr/bin/env bash\nsleep 30\n", encoding="utf-8")
+    gdbus.chmod(0o755)
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_COMMAND_TIMEOUT_SECONDS", "0.1")
+    RuntimeState().record_pane("claude", "hung-send", "claude-pane")
+
+    started = time.monotonic()
+    result = subprocess.run(
+        [str(ADAPTER / "send.sh"), "--session", "hung-send"],
+        env=os.environ.copy(),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=2,
+    )
+
+    assert result.returncode != 0
+    assert time.monotonic() - started < 1.5

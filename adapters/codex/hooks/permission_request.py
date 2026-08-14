@@ -20,13 +20,18 @@ from adapters.codex.common import (
     RuntimeState,
     dismiss_request,
     notify,
+    notifications_enabled,
     pane_for,
     read_event,
     text_field,
 )
 
 
+# The hooks.json host timeout reserves two five-second D-Bus call budgets and a
+# cleanup margin beyond this ceiling.  Never let configuration consume that
+# reserve, even when a larger finite environment value is supplied.
 DEFAULT_TIMEOUT = 300.0
+MAX_APPROVAL_WAIT_SECONDS = 300.0
 MAX_POLL_INTERVAL = 0.1
 COMMAND_PREVIEW_LIMIT = 240
 INTERRUPT_SIGNALS = (signal.SIGINT, signal.SIGTERM)
@@ -45,7 +50,7 @@ def _approval_timeout() -> float:
         return DEFAULT_TIMEOUT
     if not math.isfinite(timeout) or timeout < 0:
         return DEFAULT_TIMEOUT
-    return timeout
+    return min(timeout, MAX_APPROVAL_WAIT_SECONDS)
 
 
 def _notification_text(event):
@@ -78,6 +83,8 @@ def run() -> dict | None:
     session_id = text_field(event, "session_id")
     turn_id = text_field(event, "turn_id")
     if not session_id or not turn_id:
+        return None
+    if not notifications_enabled():
         return None
 
     request_id = f"{turn_id}:{secrets.token_hex(16)}"

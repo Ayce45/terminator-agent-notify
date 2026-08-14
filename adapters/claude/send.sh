@@ -4,6 +4,7 @@ set -euo pipefail
 
 BUS="io.github.TerminatorAgentNotify"
 PATH_NAME="/io/github/TerminatorAgentNotify"
+COMMAND_TIMEOUT_SECONDS="${TERMINATOR_AGENT_NOTIFY_COMMAND_TIMEOUT_SECONDS:-5}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 : "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
 : "${DBUS_SESSION_BUS_ADDRESS:=unix:path=${XDG_RUNTIME_DIR}/bus}"
@@ -41,15 +42,21 @@ PY
 )
 fi
 if [ -z "$pane" ] && [ "$focused" -eq 1 ]; then
-  pane=$(gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
+  pane=$(timeout "${COMMAND_TIMEOUT_SECONDS}s" \
+    gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
     --method "${BUS}.GetFocusedUUID" 2>/dev/null \
     | grep -oiE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
 fi
 [ -n "$pane" ] || { echo "could not resolve a pane uuid" >&2; exit 1; }
 
 send() {
-  gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
-    --method "${BUS}.SendKeys" "$pane" "$2" >/dev/null
+  send_reply=$(timeout "${COMMAND_TIMEOUT_SECONDS}s" \
+    gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
+    --method "${BUS}.SendKeys" "$pane" "$2")
+  [ "$send_reply" = "(true,)" ] || {
+    echo "SendKeys was not acknowledged" >&2
+    return 1
+  }
 }
 
 if [ "$resume" -eq 1 ]; then
@@ -67,7 +74,7 @@ else
   send single "$keys"
 fi
 
-if [ "$notify" -eq 1 ]; then
+if [ "$notify" -eq 1 ] && [ "${TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS:-1}" != "0" ]; then
   payload=$(python3 - "$message" <<'PY'
 import json
 import sys
@@ -75,11 +82,18 @@ import sys
 print(json.dumps({"title": "Claude Code — relancé automatiquement", "body": f"« {sys.argv[1]} » envoyé après la fin de la limite."}))
 PY
 )
-  if ! gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
+  notify_reply=$(timeout "${COMMAND_TIMEOUT_SECONDS}s" \
+    gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
       --method "${BUS}.Notify" "claude" "$session" "" "$pane" "waiting" "$payload" \
-      >/dev/null 2>&1; then
+      2>/dev/null || true)
+  if ! [[ "$notify_reply" =~ ^\(uint32[[:space:]]+[1-9][0-9]*,\)$ ]]; then
+    notify_args=(--app-name="Claude Code" --icon="${HOME}/.claude/assets/claude.png")
+    if [ -n "${TERMINATOR_AGENT_NOTIFY_EXPIRY_MS:-}" ]; then
+      notify_args+=(--expire-time="$TERMINATOR_AGENT_NOTIFY_EXPIRY_MS")
+    fi
     command -v notify-send >/dev/null 2>&1 && \
-      notify-send --app-name="Claude Code" --icon="${HOME}/.claude/assets/claude.png" \
+      timeout "${COMMAND_TIMEOUT_SECONDS}s" \
+        notify-send "${notify_args[@]}" \
         "Claude Code — relancé automatiquement" \
         "« ${message} » envoyé après la fin de la limite." >/dev/null 2>&1 || true
   fi

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -73,6 +74,8 @@ def notify(
     *,
     fallback: bool = False,
 ) -> bool:
+    if not notifications_enabled():
+        return False
     payload = json.dumps({"title": title, "body": body})
     result = dbus_call(
         "Notify", AGENT, session_id, request_id, pane, kind, payload
@@ -91,9 +94,15 @@ def notify(
 def _fallback_notification(title: str, body: str) -> None:
     if shutil.which("notify-send") is None:
         return
+    command = ["notify-send", "--app-name=Codex"]
+    if "TERMINATOR_AGENT_NOTIFY_EXPIRY_MS" in os.environ:
+        command.append(
+            f"--expire-time={os.environ['TERMINATOR_AGENT_NOTIFY_EXPIRY_MS']}"
+        )
+    command.extend((title, body))
     try:
         subprocess.Popen(
-            ["notify-send", "--app-name=Codex", title, body],
+            command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -102,6 +111,10 @@ def _fallback_notification(title: str, body: str) -> None:
         )
     except OSError:
         pass
+
+
+def notifications_enabled() -> bool:
+    return os.environ.get("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", "1") != "0"
 
 
 def dismiss_request(session_id: str, request_id: str) -> None:

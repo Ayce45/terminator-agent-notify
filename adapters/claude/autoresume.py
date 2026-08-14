@@ -73,6 +73,8 @@ def _claim_marker(path):
 
 def _notify(session_id, title, body):
     """Announce an armed resume through the same long-lived notification owner."""
+    if os.environ.get("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", "1") == "0":
+        return
     pane = RuntimeState().read_pane("claude", session_id) or ""
     payload = json.dumps({"title": title, "body": body})
     try:
@@ -91,10 +93,14 @@ def _notify(session_id, title, body):
             return
     except (OSError, subprocess.SubprocessError):
         pass
-    try:
-        subprocess.run(
-            ["notify-send", "--app-name=Claude Code", title, body], timeout=5
+    command = ["notify-send", "--app-name=Claude Code"]
+    if "TERMINATOR_AGENT_NOTIFY_EXPIRY_MS" in os.environ:
+        command.append(
+            f"--expire-time={os.environ['TERMINATOR_AGENT_NOTIFY_EXPIRY_MS']}"
         )
+    command.extend((title, body))
+    try:
+        subprocess.run(command, timeout=5)
     except (OSError, subprocess.SubprocessError):
         pass
 

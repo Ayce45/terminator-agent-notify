@@ -29,6 +29,7 @@ FRESH_SECONDS = 600
 # changed transcript format or a non-usage-limit message, so it must be ignored.
 MAX_RESET_DELAY = timedelta(days=7)
 SCAN_MTIME_SECONDS = 15 * 60
+MARKER_RETENTION = timedelta(days=7)
 _RESET_TIMESTAMP = re.compile(
     r"\breset(?:s)?\s+(?:at|on)?\s*"
     r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2}))",
@@ -37,6 +38,9 @@ _RESET_TIMESTAMP = re.compile(
 _LIMIT_TEXT = re.compile(r"\b(?:rate[_ -]?limit(?:ed)?|usage[_ ]limit|limit[_ ]exceeded)\b", re.IGNORECASE)
 _TIMESTAMP_KEYS = frozenset(("timestamp", "created_at", "createdat", "time"))
 _STATUS_KEYS = frozenset(("status", "code", "http_status", "apierrorstatus", "error_code"))
+_LIMIT_STATUS_VALUES = frozenset(("rate_limit_exceeded",))
+_RESET_KEYS = frozenset(("resetat", "reset_at", "resettime", "reset_time"))
+_MARKER_NAME = re.compile(r"^[0-9a-f]{64}-(\d+)\.scheduled$")
 
 
 class TranscriptError(ValueError):
@@ -44,6 +48,8 @@ class TranscriptError(ValueError):
 
 
 def _log(message: str) -> None:
+    if os.environ.get("TERMINATOR_AGENT_NOTIFY_LOG_LEVEL", "info") == "quiet":
+        return
     print(f"codex-autoresume: {message}", file=sys.stderr)
 
 
@@ -66,6 +72,12 @@ def _has_limit_signal(value: object) -> bool:
 
     if isinstance(value, dict):
         for key, child in value.items():
+            if (
+                key.lower() in _STATUS_KEYS
+                and isinstance(child, str)
+                and child.strip().lower() in _LIMIT_STATUS_VALUES
+            ):
+                return True
             if key.lower() in _STATUS_KEYS and str(child).strip() == "429":
                 return True
             if _has_limit_signal(child):
@@ -86,10 +98,28 @@ def _parse_timestamp(value: str) -> datetime | None:
 def _reset_time(value: object) -> datetime | None:
     strings: list[str] = []
     _strings(value, strings)
-    matches = {match.group(1) for text in strings for match in _RESET_TIMESTAMP.finditer(text)}
-    if len(matches) != 1:
+    matches = {
+        match.group(1)
+        for text in strings
+        for match in _RESET_TIMESTAMP.finditer(text)
+    }
+
+    def visit(item: object) -> None:
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if key.lower() in _RESET_KEYS and isinstance(child, str):
+                    matches.add(child)
+                visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    parsed = {_parse_timestamp(match) for match in matches}
+    parsed.discard(None)
+    if len(parsed) != 1:
         return None
-    return _parse_timestamp(matches.pop())
+    return parsed.pop()
 
 
 def _event_time(value: object) -> datetime | None:
@@ -183,10 +213,25 @@ def _has_progress_signal(value: object) -> bool:
     )
 
 
-def _marker_path(state: RuntimeState, session_id: str, reset_epoch: int) -> Path:
+def _marker_directory(state: RuntimeState) -> Path:
     directory = state.root / "autoresume" / hashlib.sha256(b"codex").hexdigest()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     directory.chmod(0o700)
+    return directory
+
+
+def _prune_markers(directory: Path, now_epoch: int) -> None:
+    cutoff = now_epoch - int(MARKER_RETENTION.total_seconds())
+    for marker in directory.glob("*.scheduled"):
+        match = _MARKER_NAME.fullmatch(marker.name)
+        if match is not None and int(match.group(1)) < cutoff:
+            try:
+                marker.unlink()
+            except OSError:
+                pass
+
+
+def _marker_path(directory: Path, session_id: str, reset_epoch: int) -> Path:
     session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
     return directory / f"{session_hash}-{reset_epoch}.scheduled"
 
@@ -222,11 +267,14 @@ def process(
     if os.environ.get("CODEX_AUTORESUME") != "1":
         return False
     try:
+        now = clock().astimezone(timezone.utc)
+        runtime = state or RuntimeState()
+        marker_directory = _marker_directory(runtime)
+        _prune_markers(marker_directory, int(now.timestamp()))
         records = _load_records(path)
         limit_index, limit = _latest_limit(records)
         if limit is None:
             return False
-        now = clock().astimezone(timezone.utc)
         reset = _reset_time(limit)
         event = _event_time(limit)
         if reset is None or event is None:
@@ -244,12 +292,11 @@ def process(
         session_id = _session_id(limit, sid or Path(path).stem)
         reset_epoch = int(reset.timestamp())
         delay = max(1, int((reset - now).total_seconds()))
-        runtime = state or RuntimeState()
-        marker = _marker_path(runtime, session_id, reset_epoch)
+        marker = _marker_path(marker_directory, session_id, reset_epoch)
         if not _claim_marker(marker):
             return False
         message = os.environ.get("CODEX_AUTORESUME_MESSAGE", "continue")
-        session_prefix = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:8]
+        session_prefix = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
         command = [
             "systemd-run", "--user", "--collect",
             f"--unit=codex-autoresume-{session_prefix}-{reset_epoch}",

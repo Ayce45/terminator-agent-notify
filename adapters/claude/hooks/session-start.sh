@@ -2,6 +2,9 @@
 # Record the Terminator pane for a Claude Code session.
 set -uo pipefail
 
+BUS="io.github.TerminatorAgentNotify"
+PATH_NAME="/io/github/TerminatorAgentNotify"
+COMMAND_TIMEOUT_SECONDS="${TERMINATOR_AGENT_NOTIFY_COMMAND_TIMEOUT_SECONDS:-5}"
 input="$(cat)"
 command -v jq >/dev/null 2>&1 || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
@@ -11,13 +14,22 @@ session_id=$(jq -r '.session_id // ""' <<<"$input")
 
 uuid="${TERMINATOR_UUID:-}"
 if [ -z "$uuid" ] && command -v gdbus >/dev/null 2>&1; then
-  result=$(gdbus call --session \
+  uuid=$(timeout "${COMMAND_TIMEOUT_SECONDS}s" \
+    gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
+    --method "${BUS}.GetFocusedUUID" 2>/dev/null \
+    | grep -oiE 'urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
+    | head -1)
+fi
+if [ -z "$uuid" ] && command -v gdbus >/dev/null 2>&1; then
+  result=$(timeout "${COMMAND_TIMEOUT_SECONDS}s" \
+    gdbus call --session \
     --dest org.freedesktop.DBus \
     --object-path /org/freedesktop/DBus \
     --method org.freedesktop.DBus.ListNames 2>/dev/null \
     | tr ',' '\n' | grep -oE 'net\.tenshu\.Terminator2[a-f0-9]+' | head -1)
   if [ -n "$result" ]; then
-    uuid=$(gdbus call --session --dest "$result" \
+    uuid=$(timeout "${COMMAND_TIMEOUT_SECONDS}s" \
+      gdbus call --session --dest "$result" \
       --object-path /net/tenshu/Terminator2 \
       --method "${result}.get_focused_terminal" 2>/dev/null \
       | grep -oE 'urn:uuid:[a-f0-9-]+' | head -1)

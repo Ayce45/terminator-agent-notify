@@ -4,7 +4,10 @@ set -uo pipefail
 
 BUS="io.github.TerminatorAgentNotify"
 PATH_NAME="/io/github/TerminatorAgentNotify"
+COMMAND_TIMEOUT_SECONDS="${TERMINATOR_AGENT_NOTIFY_COMMAND_TIMEOUT_SECONDS:-5}"
+NOTIFICATION_EXPIRY_MS="${TERMINATOR_AGENT_NOTIFY_EXPIRY_MS:-10000}"
 input="$(cat)"
+[ "${TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS:-1}" = "0" ] && exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 
@@ -42,7 +45,8 @@ esac
 payload=$(jq -cn --arg title "$title" --arg body "$message" '{title: $title, body: $body}')
 
 if command -v gdbus >/dev/null 2>&1; then
-  if response=$(gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
+  if response=$(timeout "${COMMAND_TIMEOUT_SECONDS}s" \
+      gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
       --method "${BUS}.Notify" "claude" "$session_id" "" "$pane_uuid" "$kind" "$payload" 2>&1) \
       && printf '%s' "$response" | grep -qE 'uint32 [1-9][0-9]*'; then
     exit 0
@@ -50,6 +54,7 @@ if command -v gdbus >/dev/null 2>&1; then
 fi
 
 if command -v notify-send >/dev/null 2>&1; then
-  notify-send --app-name="Claude Code" --icon="${HOME}/.claude/assets/claude.png" \
-    --expire-time=10000 "$title" "$message" >/dev/null 2>&1 || true
+  timeout "${COMMAND_TIMEOUT_SECONDS}s" \
+    notify-send --app-name="Claude Code" --icon="${HOME}/.claude/assets/claude.png" \
+    --expire-time="$NOTIFICATION_EXPIRY_MS" "$title" "$message" >/dev/null 2>&1 || true
 fi
