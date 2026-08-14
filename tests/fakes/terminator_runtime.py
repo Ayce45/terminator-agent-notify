@@ -32,10 +32,12 @@ class FakeSignalMatch:
 
 
 class FakeBus:
-    def __init__(self, notifications=None):
+    def __init__(self, notifications=None, fail_registration=None):
         self.notifications = notifications or FakeNotifications()
         self.owner = ":1.notification-daemon"
         self.signal_receivers = []
+        self.fail_registration = fail_registration
+        self.registration_calls = 0
 
     def get_object(self, _bus_name, _path):
         return self.notifications
@@ -44,6 +46,9 @@ class FakeBus:
         return self.owner
 
     def add_signal_receiver(self, callback, **kwargs):
+        self.registration_calls += 1
+        if self.registration_calls == self.fail_registration:
+            raise RuntimeError("signal registration failed")
         match = FakeSignalMatch()
         self.signal_receivers.append((callback, kwargs, match))
         return match
@@ -117,9 +122,9 @@ def make_service(root):
     return service, notifications, state
 
 
-def make_plugin(root):
+def make_plugin(root, fail_registration=None):
     module = _load_plugin()
-    bus = FakeBus()
+    bus = FakeBus(fail_registration=fail_registration)
     module.dbus.SessionBus = lambda: bus
     module.RuntimeState = lambda: RuntimeState(root)
     plugin = module.AgentNotify()

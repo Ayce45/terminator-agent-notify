@@ -154,3 +154,12 @@ def test_notification_signal_receivers_require_the_current_owner_and_unload(tmp_
     matches = [match for _callback, _registration, match in bus.signal_receivers]
     plugin.unload()
     assert all(match.removed for match in matches)
+
+
+def test_partial_signal_registration_removes_the_first_match(tmp_path):
+    plugin, bus = make_plugin(tmp_path, fail_registration=2)
+
+    assert len(bus.signal_receivers) == 1
+    assert bus.signal_receivers[0][2].removed is True
+    assert plugin._notification_signal_matches == []
+    assert plugin._notification_bus is None

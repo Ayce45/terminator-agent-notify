@@ -415,7 +415,7 @@ class AgentNotify(Plugin):
         if bus is not None and self.service is not None:
             try:
                 self._notification_bus = bus
-                self._notification_signal_matches = [
+                self._notification_signal_matches.append(
                     bus.add_signal_receiver(
                         self._on_action_signal,
                         signal_name="ActionInvoked",
@@ -423,7 +423,9 @@ class AgentNotify(Plugin):
                         path=NOTIFS_PATH,
                         bus_name=NOTIFS_BUS,
                         sender_keyword="sender",
-                    ),
+                    )
+                )
+                self._notification_signal_matches.append(
                     bus.add_signal_receiver(
                         self._on_closed_signal,
                         signal_name="NotificationClosed",
@@ -431,8 +433,8 @@ class AgentNotify(Plugin):
                         path=NOTIFS_PATH,
                         bus_name=NOTIFS_BUS,
                         sender_keyword="sender",
-                    ),
-                ]
+                    )
+                )
             except Exception as exception:
                 err("AgentNotify: cannot subscribe to notification signals: %s" % exception)
                 self._remove_notification_signal_matches()
