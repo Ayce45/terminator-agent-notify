@@ -1,3 +1,5 @@
+import stat
+from pathlib import Path
 from types import SimpleNamespace
 
 from tests.fakes.terminator_runtime import make_plugin, make_service
@@ -182,10 +184,13 @@ def test_notification_signal_receivers_require_the_current_owner_and_unload(tmp_
     service = plugin.service
     nid = service.notify("codex", "s1", "r1", "pane", "permission", PAYLOAD)
 
-    assert len(bus.signal_receivers) == 2
-    for _callback, registration, _match in bus.signal_receivers:
+    assert len(bus.signal_receivers) == 3
+    for _callback, registration, _match in bus.signal_receivers[:2]:
         assert registration["bus_name"] == "org.freedesktop.Notifications"
         assert registration["sender_keyword"] == "sender"
+    owner_registration = bus.signal_receivers[2][1]
+    assert owner_registration["signal_name"] == "NameOwnerChanged"
+    assert owner_registration["arg0"] == "org.freedesktop.Notifications"
 
     action_callback, _registration, _match = bus.signal_receivers[0]
     action_callback(nid, "approve", sender=":1.forged")
@@ -213,6 +218,159 @@ def test_partial_signal_registration_removes_the_first_match(tmp_path):
     assert bus.signal_receivers[0][2].removed is True
     assert plugin._notification_signal_matches == []
     assert plugin._notification_bus is None
+    assert plugin.service.notify("codex", "s1", "r1", "pane", "permission", PAYLOAD) == 0
+    assert bus.notifications.created == []
+
+
+def test_owner_lookup_failure_rejects_actionable_notifications(tmp_path):
+    plugin, bus = make_plugin(tmp_path, fail_owner_lookup=True)
+
+    assert plugin.service.notify("codex", "s1", "r1", "pane", "permission", PAYLOAD) == 0
+    assert bus.notifications.created == []
+
+
+def test_daemon_restart_retires_requests_before_notification_id_reuse(tmp_path):
+    plugin, bus = make_plugin(tmp_path, notification_ids=[41, 41])
+    service = plugin.service
+    old_owner = bus.owner
+    old_id = service.notify("codex", "s1", "old", "pane", "permission", PAYLOAD)
+    assert service._notif_meta[old_id][5] == old_owner
+
+    owner_callback = next(
+        callback
+        for callback, registration, _match in bus.signal_receivers
+        if registration["signal_name"] == "NameOwnerChanged"
+    )
+    bus.owner = ":1.restarted-daemon"
+    owner_callback(
+        "org.freedesktop.Notifications",
+        old_owner,
+        bus.owner,
+        sender="org.freedesktop.DBus",
+    )
+
+    assert service._notif_meta == {}
+    assert service._session_notifs == {}
+    assert service._request_notifs == {}
+    assert service._state.consume_request_closed("codex", "s1", "old") is True
+
+    new_id = service.notify("codex", "s1", "new", "pane", "permission", PAYLOAD)
+    assert new_id == old_id
+    action_callback = next(
+        callback
+        for callback, registration, _match in bus.signal_receivers
+        if registration["signal_name"] == "ActionInvoked"
+    )
+    action_callback(new_id, "approve", sender=old_owner)
+    assert service._state.consume_decision("codex", "s1", "new") is None
+    action_callback(new_id, "approve", sender=bus.owner)
+    assert service._state.consume_decision("codex", "s1", "new") == "allow"
+
+
+def test_daemon_owner_loss_retires_requests_and_disables_notifications(tmp_path):
+    plugin, bus = make_plugin(tmp_path)
+    service = plugin.service
+    notification_id = service.notify(
+        "codex", "s1", "r1", "pane", "permission", PAYLOAD
+    )
+    owner_callback = next(
+        callback
+        for callback, registration, _match in bus.signal_receivers
+        if registration["signal_name"] == "NameOwnerChanged"
+    )
+
+    owner_callback(
+        "org.freedesktop.Notifications",
+        bus.owner,
+        "",
+        sender="org.freedesktop.DBus",
+    )
+
+    assert notification_id not in service._notif_meta
+    assert service._state.consume_request_closed("codex", "s1", "r1") is True
+    assert service.notify("codex", "s1", "r2", "pane", "permission", PAYLOAD) == 0
+
+
+def test_duplicate_notification_id_cannot_link_old_request_to_new_request(tmp_path):
+    service, notifications, state = make_service(tmp_path)
+    notifications.notification_ids[:] = [9, 9]
+    first = service.notify("codex", "s1", "old", "pane", "permission", PAYLOAD)
+    second = service.notify("codex", "s1", "new", "pane", "permission", PAYLOAD)
+
+    assert first == second == 9
+    assert state.consume_request_closed("codex", "s1", "old") is True
+    service.DismissRequest("codex", "s1", "old")
+    service.on_action(second, "approve")
+
+    assert state.consume_decision("codex", "s1", "old") is None
+    assert state.consume_decision("codex", "s1", "new") == "allow"
+    assert notifications.closed == [second]
+
+
+def test_notifications_can_be_disabled_by_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", "0")
+    service, notifications, _state = make_service(tmp_path)
+
+    assert service.notify("codex", "s1", "r1", "pane", "permission", PAYLOAD) == 0
+    assert notifications.created == []
+
+
+def test_notification_expiry_is_forwarded_to_daemon(tmp_path, monkeypatch):
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_EXPIRY_MS", "4500")
+    service, notifications, _state = make_service(tmp_path)
+
+    assert service.notify("codex", "s1", "r1", "pane", "permission", PAYLOAD) != 0
+    assert notifications.created[0][-1] == 4500
+
+
+def test_quiet_and_debug_log_levels_control_plugin_output(tmp_path, monkeypatch):
+    quiet_root = tmp_path / "quiet"
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(quiet_root))
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_LOG_LEVEL", "quiet")
+    quiet_service, _notifications, _state = make_service(tmp_path / "quiet-state")
+    quiet_module = quiet_service.notify.__globals__
+    quiet_module["_log"]("hidden", level="info")
+    assert not Path(quiet_module["LOG_PATH"]).exists()
+
+    debug_root = tmp_path / "debug"
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(debug_root))
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_LOG_LEVEL", "debug")
+    debug_service, _notifications, _state = make_service(tmp_path / "debug-state")
+    debug_module = debug_service.notify.__globals__
+    debug_module["_log"]("diagnostic", level="debug")
+    assert "diagnostic" in Path(debug_module["LOG_PATH"]).read_text(encoding="utf-8")
+
+
+def test_reconcile_continues_after_one_vte_connect_failure(tmp_path, monkeypatch):
+    plugin, _bus = make_plugin(tmp_path)
+
+    class Vte:
+        def __init__(self, handler_id=None, broken=False):
+            self.handler_id = handler_id
+            self.broken = broken
+
+        def connect(self, _signal, _callback):
+            if self.broken:
+                raise RuntimeError("broken terminal")
+            return self.handler_id
+
+    first = Vte(handler_id=11)
+    broken = Vte(broken=True)
+    third = Vte(handler_id=33)
+    terminals = [
+        SimpleNamespace(vte=first),
+        SimpleNamespace(vte=broken),
+        SimpleNamespace(vte=third),
+    ]
+    monkeypatch.setitem(
+        plugin._reconcile_handlers.__globals__,
+        "Terminator",
+        lambda: SimpleNamespace(terminals=terminals),
+    )
+
+    plugin._reconcile_handlers()
+
+    assert plugin._focus_handlers == {first: 11, third: 33}
 
 
 def test_get_focused_uuid_returns_the_focused_fake_terminal(tmp_path, monkeypatch):
@@ -226,3 +384,33 @@ def test_get_focused_uuid_returns_the_focused_fake_terminal(tmp_path, monkeypatc
     )
 
     assert service.GetFocusedUUID() == "urn:uuid:focused-pane"
+
+
+def test_plugin_log_uses_private_runtime_root_and_secure_file_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    service, _notifications, _state = make_service(tmp_path / "service-state")
+    module = service.notify.__globals__
+
+    module["_log"]("created securely")
+
+    log_path = Path(module["LOG_PATH"])
+    assert log_path.parent == tmp_path / "terminator-agent-notify"
+    assert stat.S_IMODE(log_path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+
+
+def test_plugin_log_refuses_to_follow_symlink(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    service, _notifications, _state = make_service(tmp_path / "service-state")
+    module = service.notify.__globals__
+    log_path = Path(module["LOG_PATH"])
+    log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    victim = tmp_path / "victim"
+    victim.write_text("unchanged", encoding="utf-8")
+    log_path.symlink_to(victim)
+
+    module["_log"]("must not escape")
+
+    assert victim.read_text(encoding="utf-8") == "unchanged"

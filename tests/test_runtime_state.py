@@ -1,5 +1,9 @@
 import os
 import stat
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from core.runtime_state import RuntimeState
 
@@ -72,3 +76,52 @@ def test_default_root_uses_xdg_runtime_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     state = RuntimeState()
     assert state.root == tmp_path / "terminator-agent-notify"
+
+
+def test_default_root_without_xdg_is_private_and_uid_scoped(monkeypatch):
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+
+    state = RuntimeState()
+
+    assert state.root == Path("/tmp") / f"terminator-agent-notify-{os.getuid()}"
+    assert stat.S_IMODE(state.root.stat().st_mode) == 0o700
+
+
+def test_existing_runtime_root_symlink_is_rejected_before_chmod(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir(mode=0o755)
+    root = tmp_path / "runtime-link"
+    root.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(OSError):
+        RuntimeState(root)
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o755
+
+
+def test_existing_runtime_root_file_is_rejected_before_chmod(tmp_path):
+    root = tmp_path / "runtime-file"
+    root.write_text("not a directory", encoding="utf-8")
+    root.chmod(0o640)
+
+    with pytest.raises(NotADirectoryError):
+        RuntimeState(root)
+
+    assert stat.S_IMODE(root.stat().st_mode) == 0o640
+
+
+def test_existing_runtime_root_owned_by_another_uid_is_rejected(monkeypatch, tmp_path):
+    root = tmp_path / "runtime"
+    root.mkdir()
+    real_lstat = os.lstat
+
+    def foreign_owner(path):
+        result = real_lstat(path)
+        if os.fspath(path) == os.fspath(root):
+            return SimpleNamespace(st_mode=result.st_mode, st_uid=os.getuid() + 1)
+        return result
+
+    monkeypatch.setattr(os, "lstat", foreign_owner)
+
+    with pytest.raises(PermissionError):
+        RuntimeState(root)

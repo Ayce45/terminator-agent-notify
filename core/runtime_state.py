@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
+import stat
 import tempfile
 import uuid
 from pathlib import Path
@@ -33,8 +35,37 @@ class RuntimeState:
 
     @staticmethod
     def _ensure_directory(path: Path) -> None:
-        path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        path.chmod(0o700)
+        try:
+            path_status = os.lstat(path)
+        except FileNotFoundError:
+            try:
+                path.mkdir(mode=0o700, parents=True, exist_ok=False)
+            except FileExistsError:
+                pass
+            path_status = os.lstat(path)
+
+        if stat.S_ISLNK(path_status.st_mode):
+            raise OSError(errno.ELOOP, "runtime directory must not be a symlink", path)
+        if not stat.S_ISDIR(path_status.st_mode):
+            raise NotADirectoryError(errno.ENOTDIR, "runtime path is not a directory", path)
+        if path_status.st_uid != os.getuid():
+            raise PermissionError(errno.EPERM, "runtime directory has the wrong owner", path)
+
+        flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            opened_status = os.fstat(descriptor)
+            if not stat.S_ISDIR(opened_status.st_mode):
+                raise NotADirectoryError(
+                    errno.ENOTDIR, "runtime path is not a directory", path
+                )
+            if opened_status.st_uid != os.getuid():
+                raise PermissionError(
+                    errno.EPERM, "runtime directory has the wrong owner", path
+                )
+            os.fchmod(descriptor, 0o700)
+        finally:
+            os.close(descriptor)
 
     @staticmethod
     def _check_agent(agent: str) -> None:
@@ -129,8 +160,7 @@ class RuntimeState:
 
     @staticmethod
     def _atomic_write(path: Path, value: str) -> None:
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        path.parent.chmod(0o700)
+        RuntimeState._ensure_directory(path.parent)
         fd, temporary_name = tempfile.mkstemp(
             prefix=".runtime-state-", dir=path.parent
         )

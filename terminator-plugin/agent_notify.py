@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
 import time
 from pathlib import Path
@@ -55,22 +56,74 @@ BUS_NAME = "io.github.TerminatorAgentNotify"
 OBJ_PATH = "/io/github/TerminatorAgentNotify"
 NOTIFS_BUS = "org.freedesktop.Notifications"
 NOTIFS_PATH = "/org/freedesktop/Notifications"
+DBUS_BUS = "org.freedesktop.DBus"
+DBUS_PATH = "/org/freedesktop/DBus"
 KEY_APPROVE = "\r"
 KEY_DENY = "\x1b"
 ICON_PATH = str(Path(__file__).resolve().parent.parent / "assets" / "claude.png")
-LOG_PATH = os.path.join(
-    os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "terminator-agent-notify.log"
-)
 
 
-def _log(message):
+def _env_enabled(name, default=True):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _env_expiry_ms():
     try:
-        with open(LOG_PATH, "a", encoding="utf-8") as stream:
+        return max(0, int(os.environ.get("TERMINATOR_AGENT_NOTIFY_EXPIRY_MS", "0")))
+    except ValueError:
+        return 0
+
+
+NOTIFICATIONS_ENABLED = _env_enabled("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS")
+NOTIFICATION_EXPIRY_MS = _env_expiry_ms()
+LOG_LEVEL = os.environ.get("TERMINATOR_AGENT_NOTIFY_LOG_LEVEL", "info").lower()
+if LOG_LEVEL not in {"quiet", "info", "debug"}:
+    LOG_LEVEL = "info"
+
+
+def _log_root():
+    state_home = os.environ.get("XDG_STATE_HOME")
+    if state_home:
+        return RuntimeState(Path(state_home) / "terminator-agent-notify").root
+    return RuntimeState().root
+
+
+try:
+    LOG_PATH = str(_log_root() / "plugin.log")
+except (OSError, ValueError):
+    LOG_PATH = None
+
+
+def _log(message, level="info"):
+    if LOG_PATH is None or LOG_LEVEL == "quiet":
+        return
+    if level == "debug" and LOG_LEVEL != "debug":
+        return
+    descriptor = None
+    try:
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(LOG_PATH, flags, 0o600)
+        file_status = os.fstat(descriptor)
+        if not stat.S_ISREG(file_status.st_mode) or file_status.st_uid != os.getuid():
+            return
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "a", encoding="utf-8") as stream:
+            descriptor = None
             stream.write(
                 "%s [plugin] %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%S%z"), message)
             )
     except Exception:
         pass
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 
 
 def _escape_markup(text):
@@ -107,11 +160,22 @@ def _find_notebook(terminal):
 class FocusService(dbus.service.Object):
     """Own notifications so action signals have a durable receiver."""
 
-    def __init__(self, bus_name, path, notifs_iface, state=None):
+    def __init__(
+        self,
+        bus_name,
+        path,
+        notifs_iface,
+        state=None,
+        notification_owner=None,
+        action_health=None,
+    ):
         super().__init__(bus_name, path)
         self._notifs = notifs_iface
         self._state = state if state is not None else RuntimeState()
-        # notification id -> (agent, session id, request id, pane uuid, kind)
+        self._notification_owner = notification_owner or (lambda: "direct-service")
+        self._action_health = action_health or (lambda: True)
+        # notification id -> (agent, session id, request id, pane uuid, kind,
+        # daemon unique owner)
         self._notif_meta = {}
         # (agent, session id) -> set(notification id)
         self._session_notifs = {}
@@ -240,13 +304,29 @@ class FocusService(dbus.service.Object):
         _log("SendKeys: no compatible feed_child signature")
         return False
 
-    def _track(self, agent, session_id, request_id, pane_uuid, kind, notification_id):
+    def _track(
+        self,
+        agent,
+        session_id,
+        request_id,
+        pane_uuid,
+        kind,
+        notification_id,
+        daemon_owner,
+    ):
+        previous = self._notif_meta.get(notification_id)
+        if previous is not None:
+            self._mark_request_closed(previous)
+            self._untrack(notification_id)
+        else:
+            self._discard_id_from_indexes(notification_id)
         self._notif_meta[notification_id] = (
             agent,
             session_id,
             request_id,
             pane_uuid,
             kind,
+            daemon_owner,
         )
         self._session_notifs.setdefault((agent, session_id), set()).add(notification_id)
         self._request_notifs.setdefault((agent, session_id, request_id), set()).add(
@@ -254,19 +334,23 @@ class FocusService(dbus.service.Object):
         )
 
     def _untrack(self, notification_id):
-        metadata = self._notif_meta.pop(notification_id, None)
-        if metadata is None:
-            return
-        notification_ids = self._session_notifs.get((metadata[0], metadata[1]))
-        if notification_ids is not None:
-            notification_ids.discard(notification_id)
-            if not notification_ids:
-                self._session_notifs.pop((metadata[0], metadata[1]), None)
-        request_ids = self._request_notifs.get((metadata[0], metadata[1], metadata[2]))
-        if request_ids is not None:
-            request_ids.discard(notification_id)
-            if not request_ids:
-                self._request_notifs.pop((metadata[0], metadata[1], metadata[2]), None)
+        self._notif_meta.pop(notification_id, None)
+        self._discard_id_from_indexes(notification_id)
+
+    def _discard_id_from_indexes(self, notification_id):
+        for index in (self._session_notifs, self._request_notifs):
+            for key, notification_ids in list(index.items()):
+                notification_ids.discard(notification_id)
+                if not notification_ids:
+                    index.pop(key, None)
+
+    def retire_notifications(self):
+        """Fail closed when notification signal ownership becomes uncertain."""
+        for metadata in list(self._notif_meta.values()):
+            self._mark_request_closed(metadata)
+        self._notif_meta.clear()
+        self._session_notifs.clear()
+        self._request_notifs.clear()
 
     @dbus.service.method(BUS_NAME, in_signature="ssssss", out_signature="u")
     def Notify(self, agent, session_id, request_id, pane_uuid, kind, payload_json):
@@ -275,8 +359,17 @@ class FocusService(dbus.service.Object):
         )
 
     def notify(self, agent, session_id, request_id, pane_uuid, kind, payload_json):
-        if self._notifs is None:
-            _log("Notify: Notifications interface unavailable")
+        if not NOTIFICATIONS_ENABLED:
+            _log("Notify: notifications disabled", level="debug")
+            return 0
+        try:
+            daemon_owner = str(self._notification_owner() or "")
+            action_healthy = bool(self._action_health())
+        except Exception as exception:
+            _log("Notify: notification owner state failed: %s" % exception)
+            return 0
+        if self._notifs is None or not action_healthy or not daemon_owner:
+            _log("Notify: Notifications action handling unavailable")
             return 0
         try:
             payload = json.loads(str(payload_json))
@@ -315,13 +408,21 @@ class FocusService(dbus.service.Object):
                     _escape_markup(body),
                     actions,
                     hints,
-                    0,
+                    NOTIFICATION_EXPIRY_MS,
                 )
             )
         except Exception as exception:
             _log("Notify failed: %s" % exception)
             return 0
-        self._track(agent, session_id, request_id, pane_uuid, kind, notification_id)
+        self._track(
+            agent,
+            session_id,
+            request_id,
+            pane_uuid,
+            kind,
+            notification_id,
+            daemon_owner,
+        )
         _log(
             "notify id=%d agent=%s sid=%s request=%s kind=%s pane=%s"
             % (notification_id, agent, session_id, request_id, kind, pane_uuid)
@@ -388,7 +489,7 @@ class FocusService(dbus.service.Object):
         for notification_id in notification_ids:
             self._close_and_untrack(notification_id)
 
-    def on_action(self, notification_id, action_key):
+    def on_action(self, notification_id, action_key, daemon_owner=None):
         # Some servers signal one action twice; untracking on the first action
         # gives the second delivery no work to do.
         notification_id = int(notification_id)
@@ -397,7 +498,10 @@ class FocusService(dbus.service.Object):
         _log("ActionInvoked id=%d key=%s meta=%s" % (notification_id, action_key, metadata))
         if metadata is None:
             return
-        agent, session_id, request_id, pane_uuid, kind = metadata
+        if daemon_owner is not None and str(daemon_owner) != metadata[5]:
+            _log("ignored action for stale notification generation")
+            return
+        agent, session_id, request_id, pane_uuid, kind = metadata[:5]
         if kind == "permission" and action_key in {"approve", "deny"}:
             if agent == "claude":
                 self._send_keys(pane_uuid, KEY_APPROVE if action_key == "approve" else KEY_DENY)
@@ -413,9 +517,16 @@ class FocusService(dbus.service.Object):
             self._close_and_untrack(notification_id)
             self._focus(pane_uuid)
 
-    def on_closed(self, notification_id, _reason):
+    def on_closed(self, notification_id, _reason, daemon_owner=None):
         notification_id = int(notification_id)
         metadata = self._notif_meta.get(notification_id)
+        if (
+            metadata is not None
+            and daemon_owner is not None
+            and str(daemon_owner) != metadata[5]
+        ):
+            _log("ignored close for stale notification generation")
+            return
         self._mark_request_closed(metadata)
         self._untrack(notification_id)
 
@@ -433,12 +544,20 @@ class AgentNotify(Plugin):
         self._reconcile_id = None
         self._notification_signal_matches = []
         self._notification_bus = None
+        self._notification_owner = None
+        self._notification_tracking_healthy = False
         bus = self._session_bus()
         notifications = self._notifications_interface(bus)
         if bus is not None:
             try:
                 self.bus_name = dbus.service.BusName(BUS_NAME, bus)
-                self.service = FocusService(self.bus_name, OBJ_PATH, notifications)
+                self.service = FocusService(
+                    self.bus_name,
+                    OBJ_PATH,
+                    notifications,
+                    notification_owner=lambda: self._notification_owner,
+                    action_health=lambda: self._notification_tracking_healthy,
+                )
                 _log("plugin registered as %s" % BUS_NAME)
             except Exception as exception:
                 err("AgentNotify plugin failed to register: %s" % exception)
@@ -465,6 +584,21 @@ class AgentNotify(Plugin):
                         sender_keyword="sender",
                     )
                 )
+                self._notification_signal_matches.append(
+                    bus.add_signal_receiver(
+                        self._on_notification_owner_changed,
+                        signal_name="NameOwnerChanged",
+                        dbus_interface=DBUS_BUS,
+                        path=DBUS_PATH,
+                        bus_name=DBUS_BUS,
+                        arg0=NOTIFS_BUS,
+                        sender_keyword="sender",
+                    )
+                )
+                self._notification_owner = str(bus.get_name_owner(NOTIFS_BUS))
+                if not self._notification_owner:
+                    raise RuntimeError("notification daemon has no unique owner")
+                self._notification_tracking_healthy = True
             except Exception as exception:
                 err("AgentNotify: cannot subscribe to notification signals: %s" % exception)
                 self._remove_notification_signal_matches()
@@ -498,7 +632,12 @@ class AgentNotify(Plugin):
                     continue
                 current_vtes.add(vte)
                 if vte not in self._focus_handlers:
-                    self._focus_handlers[vte] = vte.connect("focus-in-event", self._on_focus_in)
+                    try:
+                        self._focus_handlers[vte] = vte.connect(
+                            "focus-in-event", self._on_focus_in
+                        )
+                    except Exception as exception:
+                        err("AgentNotify: cannot connect VTE focus handler: %s" % exception)
             for vte in list(self._focus_handlers):
                 if vte not in current_vtes:
                     del self._focus_handlers[vte]
@@ -519,30 +658,51 @@ class AgentNotify(Plugin):
         return False
 
     def _trusted_notification_sender(self, sender):
-        """Check the sender against the notification service's current owner."""
-        if not sender or self._notification_bus is None:
-            return False
-        try:
-            return str(sender) == str(self._notification_bus.get_name_owner(NOTIFS_BUS))
-        except Exception as exception:
-            _log("notification sender validation failed: %s" % exception)
-            return False
+        """Check the sender against the tracked notification-daemon generation."""
+        return bool(
+            sender
+            and self._notification_tracking_healthy
+            and self._notification_owner
+            and str(sender) == self._notification_owner
+        )
 
     def _on_action_signal(self, notification_id, action_key, sender=None):
         if not self._trusted_notification_sender(sender):
             _log("ignored ActionInvoked from untrusted sender %s" % sender)
             return
         if self.service is not None:
-            self.service.on_action(notification_id, action_key)
+            self.service.on_action(notification_id, action_key, daemon_owner=sender)
 
     def _on_closed_signal(self, notification_id, reason, sender=None):
         if not self._trusted_notification_sender(sender):
             _log("ignored NotificationClosed from untrusted sender %s" % sender)
             return
         if self.service is not None:
-            self.service.on_closed(notification_id, reason)
+            self.service.on_closed(notification_id, reason, daemon_owner=sender)
+
+    def _on_notification_owner_changed(
+        self, name, old_owner, new_owner, sender=None
+    ):
+        if str(name) != NOTIFS_BUS:
+            return
+        if self.service is not None:
+            self.service.retire_notifications()
+        self._notification_owner = str(new_owner) or None
+        self._notification_tracking_healthy = bool(
+            self._notification_owner
+            and self._notification_bus is not None
+            and len(self._notification_signal_matches) == 3
+        )
+        _log(
+            "notification owner changed old=%s new=%s healthy=%s"
+            % (old_owner, new_owner, self._notification_tracking_healthy)
+        )
 
     def _remove_notification_signal_matches(self):
+        self._notification_tracking_healthy = False
+        self._notification_owner = None
+        if self.service is not None:
+            self.service.retire_notifications()
         for match in self._notification_signal_matches:
             try:
                 match.remove()

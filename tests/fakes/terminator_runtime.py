@@ -11,12 +11,15 @@ from core.runtime_state import RuntimeState
 
 
 class FakeNotifications:
-    def __init__(self):
+    def __init__(self, notification_ids=None):
         self.created = []
         self.closed = []
+        self.notification_ids = list(notification_ids or [])
 
     def Notify(self, *arguments):
         self.created.append(arguments)
+        if self.notification_ids:
+            return self.notification_ids.pop(0)
         return len(self.created)
 
     def CloseNotification(self, notification_id):
@@ -32,17 +35,22 @@ class FakeSignalMatch:
 
 
 class FakeBus:
-    def __init__(self, notifications=None, fail_registration=None):
+    def __init__(
+        self, notifications=None, fail_registration=None, fail_owner_lookup=False
+    ):
         self.notifications = notifications or FakeNotifications()
         self.owner = ":1.notification-daemon"
         self.signal_receivers = []
         self.fail_registration = fail_registration
+        self.fail_owner_lookup = fail_owner_lookup
         self.registration_calls = 0
 
     def get_object(self, _bus_name, _path):
         return self.notifications
 
     def get_name_owner(self, _bus_name):
+        if self.fail_owner_lookup:
+            raise RuntimeError("owner lookup failed")
         return self.owner
 
     def add_signal_receiver(self, callback, **kwargs):
@@ -122,9 +130,15 @@ def make_service(root):
     return service, notifications, state
 
 
-def make_plugin(root, fail_registration=None):
+def make_plugin(
+    root, fail_registration=None, fail_owner_lookup=False, notification_ids=None
+):
     module = _load_plugin()
-    bus = FakeBus(fail_registration=fail_registration)
+    bus = FakeBus(
+        notifications=FakeNotifications(notification_ids),
+        fail_registration=fail_registration,
+        fail_owner_lookup=fail_owner_lookup,
+    )
     module.dbus.SessionBus = lambda: bus
     module.RuntimeState = lambda: RuntimeState(root)
     plugin = module.AgentNotify()
