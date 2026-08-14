@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+trap 'status=$?; printf "installation test failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2; exit "$status"' ERR
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TEST_ROOT=$(mktemp -d)
