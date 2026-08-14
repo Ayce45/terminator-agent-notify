@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.runtime_state import RuntimeState
+from terminator_agent_notify_core.runtime_state import RuntimeState
 
 
 ROOT = Path(__file__).parents[1]
@@ -98,6 +99,50 @@ def test_generic_notification_disable_skips_claude_notification_boundaries(
     assert not calls.exists()
 
 
+def test_persisted_notification_disable_reaches_claude_hook(tmp_path, monkeypatch):
+    calls = _hook_environment(tmp_path, monkeypatch)
+    monkeypatch.delenv("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", raising=False)
+    config = tmp_path / "environment"
+    config.write_text(
+        "TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS=0\n", encoding="utf-8"
+    )
+    config.chmod(0o600)
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_CONFIG", str(config))
+
+    _run_hook(
+        "notify-waiting.sh",
+        {"session_id": "persisted-disabled"},
+        os.environ.copy(),
+    )
+
+    assert not calls.exists()
+
+
+@pytest.mark.parametrize(
+    ("hook", "payload"),
+    [
+        ("notify-waiting.sh", {"session_id": "safe-config"}),
+        ("auto-resume-on-limit.sh", {}),
+    ],
+)
+def test_claude_hooks_never_execute_persisted_environment_as_shell(
+    tmp_path, monkeypatch, hook, payload
+):
+    _hook_environment(tmp_path, monkeypatch)
+    marker = tmp_path / "executed"
+    config = tmp_path / "environment"
+    config.write_text(
+        f"TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS=0\ntouch {marker}\n",
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_CONFIG", str(config))
+
+    _run_hook(hook, payload, os.environ.copy())
+
+    assert not marker.exists()
+
+
 def test_session_start_records_pane_in_the_claude_namespace(tmp_path, monkeypatch):
     _hook_environment(tmp_path, monkeypatch)
     monkeypatch.setenv("TERMINATOR_UUID", "urn:uuid:claude-pane")
@@ -161,6 +206,14 @@ def test_fresh_limit_schedules_once_and_recovered_transcript_does_not(
     module = _load_autoresume()
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
     monkeypatch.setenv("CLAUDE_AUTORESUME_ARM_NOTIFY", "0")
+    monkeypatch.setenv("CLAUDE_AUTORESUME_GENERATION", "claude-generation")
+    config = tmp_path / "environment"
+    config.write_text(
+        "CLAUDE_AUTORESUME=1\nCLAUDE_AUTORESUME_GENERATION=claude-generation\n",
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_CONFIG", str(config))
 
     class FixedDateTime(datetime):
         @classmethod
@@ -189,7 +242,9 @@ def test_fresh_limit_schedules_once_and_recovered_transcript_does_not(
         "systemd-run",
         "--user",
         "--collect",
-        f"--unit=claude-autoresume-claude-s-{int(target.timestamp())}",
+        f"--unit=terminator-agent-notify-claude-autoresume-"
+        f"{__import__('hashlib').sha256(b'claude-session-429').hexdigest()[:16]}-"
+        f"{int(target.timestamp())}",
         f"--on-active={int((target - now).total_seconds())}s",
         "--timer-property=AccuracySec=1s",
         "--description=Claude auto-resume after usage limit (continue)",
@@ -200,6 +255,10 @@ def test_fresh_limit_schedules_once_and_recovered_transcript_does_not(
         "continue",
         "--notify",
         "--resume",
+        "--generation",
+        "claude-generation",
+        "--config",
+        str(config),
     ]
 
     recovered = tmp_path / "recovered.jsonl"
@@ -212,10 +271,57 @@ def test_fresh_limit_schedules_once_and_recovered_transcript_does_not(
     assert len(scheduled) == 1
 
 
+def test_generation_rotation_allows_same_claude_limit_to_be_rescheduled(
+    tmp_path, monkeypatch
+):
+    """A stale marker must not suppress the replacement job after reinstall."""
+    module = _load_autoresume()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("CLAUDE_AUTORESUME_ARM_NOTIFY", "0")
+    config = tmp_path / "environment"
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_CONFIG", str(config))
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 8, 14, 13, 0, tzinfo=timezone.utc)
+
+    scheduled = []
+    monkeypatch.setattr(module, "datetime", FixedDateTime)
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda command, **_kwargs: scheduled.append(command)
+        or SimpleNamespace(returncode=0, stdout=b""),
+    )
+
+    for generation in ("first-generation", "second-generation"):
+        monkeypatch.setenv("CLAUDE_AUTORESUME_GENERATION", generation)
+        config.write_text(
+            f"CLAUDE_AUTORESUME=1\nCLAUDE_AUTORESUME_GENERATION={generation}\n",
+            encoding="utf-8",
+        )
+        config.chmod(0o600)
+        assert module.process(FIXTURES / "limit.jsonl", "claude-session-429") is True
+
+    assert [command[command.index("--generation") + 1] for command in scheduled] == [
+        "first-generation",
+        "second-generation",
+    ]
+
+
 def test_schedule_failure_removes_its_marker(tmp_path, monkeypatch):
     module = _load_autoresume()
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
     monkeypatch.setenv("CLAUDE_AUTORESUME_ARM_NOTIFY", "0")
+    monkeypatch.setenv("CLAUDE_AUTORESUME_GENERATION", "claude-generation")
+    config = tmp_path / "environment"
+    config.write_text(
+        "CLAUDE_AUTORESUME=1\nCLAUDE_AUTORESUME_GENERATION=claude-generation\n",
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_CONFIG", str(config))
 
     class FixedDateTime(datetime):
         @classmethod
@@ -233,6 +339,127 @@ def test_schedule_failure_removes_its_marker(tmp_path, monkeypatch):
 
     assert module.process(FIXTURES / "limit.jsonl", "claude-session-429") is False
     assert not list((tmp_path / "runtime" / "terminator-agent-notify" / "autoresume").rglob("*.scheduled"))
+
+
+def test_claude_scheduler_is_bounded_and_timeout_releases_marker(
+    tmp_path, monkeypatch
+):
+    module = _load_autoresume()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("CLAUDE_AUTORESUME_ARM_NOTIFY", "0")
+    monkeypatch.setenv("CLAUDE_AUTORESUME_GENERATION", "claude-generation")
+    config = tmp_path / "environment"
+    config.write_text(
+        "CLAUDE_AUTORESUME=1\nCLAUDE_AUTORESUME_GENERATION=claude-generation\n",
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_CONFIG", str(config))
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 8, 14, 13, 0, tzinfo=timezone.utc)
+
+    observed = {}
+
+    def run(command, **kwargs):
+        observed.update(kwargs)
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+
+    monkeypatch.setattr(module, "datetime", FixedDateTime)
+    monkeypatch.setattr(module.subprocess, "run", run)
+
+    assert module.process(FIXTURES / "limit.jsonl", "claude-session-429") is False
+    assert observed["timeout"] == module.SCHEDULER_TIMEOUT_SECONDS
+    assert not list(
+        (tmp_path / "runtime" / "terminator-agent-notify" / "autoresume").rglob(
+            "*.scheduled"
+        )
+    )
+
+
+def test_missing_claude_generation_or_config_never_schedules(tmp_path, monkeypatch):
+    """Every delayed Claude execution needs a durable generation guard."""
+    module = _load_autoresume()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("CLAUDE_AUTORESUME", "1")
+    monkeypatch.delenv("CLAUDE_AUTORESUME_GENERATION", raising=False)
+    monkeypatch.delenv("TERMINATOR_AGENT_NOTIFY_CONFIG", raising=False)
+    calls = []
+    monkeypatch.setattr(module.subprocess, "run", lambda command, **_kwargs: calls.append(command))
+
+    assert module.process(FIXTURES / "limit.jsonl", "claude-session-429") is False
+    assert calls == []
+
+
+def test_limit_hook_honors_persisted_claude_disable(tmp_path, monkeypatch):
+    """The Claude lifecycle hook must not bypass the durable timer opt-out."""
+    _hook_environment(tmp_path, monkeypatch)
+    config = tmp_path / "environment"
+    config.write_text(
+        "CLAUDE_AUTORESUME=0\nCLAUDE_AUTORESUME_GENERATION=disabled\n",
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_CONFIG", str(config))
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text("{}\n", encoding="utf-8")
+    python_calls = tmp_path / "python.calls"
+    fake_python = tmp_path / "python3"
+    fake_python.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$PYTHON_CALLS"\nexec "$REAL_PYTHON" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+    monkeypatch.setenv("PYTHON_CALLS", str(python_calls))
+    monkeypatch.setenv("REAL_PYTHON", sys.executable)
+
+    _run_hook(
+        "auto-resume-on-limit.sh",
+        {"session_id": "disabled", "transcript_path": str(transcript)},
+        os.environ.copy(),
+    )
+
+    assert "autoresume.py" not in python_calls.read_text(encoding="utf-8")
+
+
+def test_limit_hook_bounds_a_hung_autoresume_engine(tmp_path, monkeypatch):
+    _hook_environment(tmp_path, monkeypatch)
+    config = tmp_path / "environment"
+    config.write_text(
+        "CLAUDE_AUTORESUME=1\nCLAUDE_AUTORESUME_GENERATION=current\n",
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_CONFIG", str(config))
+    monkeypatch.setenv("CLAUDE_AUTORESUME_HOOK_TIMEOUT_SECONDS", "0.1")
+    monkeypatch.setenv("REAL_PYTHON", sys.executable)
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text("{}\n", encoding="utf-8")
+    fake_python = tmp_path / "python3"
+    fake_python.write_text(
+        "#!/usr/bin/env bash\n"
+        "case \"${1:-}\" in\n"
+        "  -) exec \"$REAL_PYTHON\" \"$@\" ;;\n"
+        "  *autoresume.py) sleep 30 ;;\n"
+        "  *) exec \"$REAL_PYTHON\" \"$@\" ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    started = time.monotonic()
+    result = _run_hook(
+        "auto-resume-on-limit.sh",
+        {"session_id": "hung-engine", "transcript_path": str(transcript)},
+        os.environ.copy(),
+        check=False,
+        timeout=2,
+    )
+
+    assert result.returncode == 0
+    assert time.monotonic() - started < 1.5
 
 
 def test_load_objects_discards_scalar_and_list_records(tmp_path):
@@ -288,6 +515,27 @@ def test_armed_resume_notification_uses_the_claude_namespace(tmp_path, monkeypat
     ]
 
 
+@pytest.mark.parametrize("reply", [b"(uint32 0,)", b"(uint32 1,) trailing", b"bad"])
+def test_armed_resume_notification_requires_an_exact_positive_ack(
+    tmp_path, monkeypatch, reply
+):
+    module = _load_autoresume()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    calls = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        if command[0] == "gdbus":
+            return SimpleNamespace(returncode=0, stdout=reply)
+        return SimpleNamespace(returncode=0, stdout=b"")
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+
+    module._notify("armed-session", "Resume armed", "A resume was scheduled.")
+
+    assert calls[1][0] == "notify-send"
+
+
 def test_generic_notification_disable_skips_claude_autoresume_notice(
     tmp_path, monkeypatch
 ):
@@ -311,9 +559,26 @@ def test_resume_send_uses_the_dialog_safe_key_sequence(tmp_path, monkeypatch):
     sleep.chmod(0o755)
     monkeypatch.setenv("SLEEPS", str(sleeps))
     RuntimeState().record_pane("claude", "resume-session", "claude-pane")
+    config = tmp_path / "environment"
+    config.write_text(
+        "CLAUDE_AUTORESUME=1\nCLAUDE_AUTORESUME_GENERATION=current\n",
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
 
     subprocess.run(
-        [str(ADAPTER / "send.sh"), "--session", "resume-session", "--message", "continue", "--resume"],
+        [
+            str(ADAPTER / "send.sh"),
+            "--session",
+            "resume-session",
+            "--message",
+            "continue",
+            "--resume",
+            "--generation",
+            "current",
+            "--config",
+            str(config),
+        ],
         env=os.environ.copy(),
         check=True,
         capture_output=True,
@@ -440,6 +705,48 @@ def test_generic_expiry_reaches_claude_notify_send_fallback(tmp_path, monkeypatc
     )
 
     assert "--expire-time=4321" in fallback.read_text(encoding="utf-8")
+
+
+def test_claude_hook_rejects_a_malformed_positive_notification_ack(
+    tmp_path, monkeypatch
+):
+    _hook_environment(tmp_path, monkeypatch)
+    fallback = tmp_path / "notify-send.calls"
+    notify_send = tmp_path / "notify-send"
+    notify_send.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$NOTIFY_SEND_CALLS"\n',
+        encoding="utf-8",
+    )
+    notify_send.chmod(0o755)
+    monkeypatch.setenv("GDBUS_NOTIFY_REPLY", "(uint32 1,) trailing")
+    monkeypatch.setenv("NOTIFY_SEND_CALLS", str(fallback))
+
+    _run_hook("notify-waiting.sh", {"session_id": "malformed-ack"}, os.environ.copy())
+
+    assert fallback.exists()
+
+
+def test_empty_persisted_expiry_preserves_claude_fallback_default(
+    tmp_path, monkeypatch
+):
+    _hook_environment(tmp_path, monkeypatch)
+    fallback = tmp_path / "notify-send.calls"
+    notify_send = tmp_path / "notify-send"
+    notify_send.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$NOTIFY_SEND_CALLS"\n',
+        encoding="utf-8",
+    )
+    notify_send.chmod(0o755)
+    config = tmp_path / "environment"
+    config.write_text("TERMINATOR_AGENT_NOTIFY_EXPIRY_MS=''\n", encoding="utf-8")
+    config.chmod(0o600)
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_CONFIG", str(config))
+    monkeypatch.setenv("GDBUS_FAIL_NOTIFY", "1")
+    monkeypatch.setenv("NOTIFY_SEND_CALLS", str(fallback))
+
+    _run_hook("notify-waiting.sh", {"session_id": "default-expiry"}, os.environ.copy())
+
+    assert "--expire-time=10000" in fallback.read_text(encoding="utf-8")
 
 
 def test_generic_notification_disable_keeps_send_but_skips_notice(

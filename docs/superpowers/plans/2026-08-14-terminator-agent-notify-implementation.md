@@ -85,7 +85,7 @@ git commit -m "chore: import proven Claude notification baseline"
 ### Task 2: Add Agent-Neutral Runtime State
 
 **Files:**
-- Create: `core/runtime_state.py`
+- Create: `terminator_agent_notify_core/runtime_state.py`
 - Create: `tests/test_runtime_state.py`
 
 **Interfaces:**
@@ -95,7 +95,7 @@ git commit -m "chore: import proven Claude notification baseline"
 - [ ] **Step 1: Write failing isolation and single-use tests**
 
 ```python
-from core.runtime_state import RuntimeState
+from terminator_agent_notify_core.runtime_state import RuntimeState
 
 
 def test_agent_sessions_are_isolated(tmp_path):
@@ -117,7 +117,7 @@ def test_decision_is_consumed_once(tmp_path):
 
 Run: `pytest tests/test_runtime_state.py -v`
 
-Expected: FAIL with `ModuleNotFoundError: core.runtime_state`.
+Expected: FAIL with `ModuleNotFoundError: terminator_agent_notify_core.runtime_state`.
 
 - [ ] **Step 3: Implement private, atomic state operations**
 
@@ -132,7 +132,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add core/runtime_state.py tests/test_runtime_state.py
+git add terminator_agent_notify_core/runtime_state.py tests/test_runtime_state.py
 git commit -m "feat: add private agent-neutral runtime state"
 ```
 
@@ -416,11 +416,11 @@ Document exact dependencies, installation targets, Codex hook trust review, perm
 
 - [ ] **Step 4: Add CI**
 
-Configure GitHub Actions on Ubuntu to install pytest, run `pytest -v`, run `bash -n` over tracked shell scripts, and run `python -m compileall core adapters terminator-plugin` without requiring a graphical session.
+Configure GitHub Actions on Ubuntu to install pytest, run `pytest -v`, execute `bash tests/test_installation.sh`, run `bash -n` over tracked shell scripts, and run `python -m compileall terminator_agent_notify_core adapters terminator-plugin` without requiring a graphical session.
 
 - [ ] **Step 5: Run all non-graphical verification**
 
-Run: `pytest -v && find . -type f -name '*.sh' -print0 | xargs -0 bash -n && python -m compileall -q core adapters terminator-plugin && git diff --check`
+Run: `pytest -v && bash tests/test_installation.sh && find . -type f -name '*.sh' -print0 | xargs -0 bash -n && python -m compileall -q terminator_agent_notify_core adapters terminator-plugin && git diff --check`
 
 Expected: all commands exit `0`.
 
@@ -435,4 +435,3 @@ git add README.md CONTRIBUTING.md .github tests docs/superpowers/specs
 git commit -m "docs: add setup, migration, CI, and release checks"
 git push origin main
 ```
-

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from core.runtime_state import RuntimeState
+from terminator_agent_notify_core.runtime_state import RuntimeState
 from adapters.codex.hooks import permission_request
 
 
@@ -29,7 +29,7 @@ import json
 import os
 import sys
 
-from core.runtime_state import RuntimeState
+from terminator_agent_notify_core.runtime_state import RuntimeState
 
 arguments = sys.argv[1:]
 with open(os.environ["GDBUS_CALLS"], "a", encoding="utf-8") as stream:
@@ -530,6 +530,26 @@ def test_generic_notification_disable_skips_codex_notification_boundaries(
     result = _run_hook(
         "stop.py",
         json.dumps({"session_id": "codex-session-disabled"}),
+        environment,
+    )
+
+    assert result.returncode == 0
+    assert _calls(calls_path) == []
+
+
+def test_persisted_notification_disable_reaches_codex_hook(hook_environment):
+    environment, calls_path = hook_environment
+    environment.pop("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", None)
+    config = Path(environment["HOME"]) / "persisted-environment"
+    config.write_text(
+        "TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS=0\n", encoding="utf-8"
+    )
+    config.chmod(0o600)
+    environment["TERMINATOR_AGENT_NOTIFY_CONFIG"] = str(config)
+
+    result = _run_hook(
+        "stop.py",
+        json.dumps({"session_id": "codex-persisted-disabled"}),
         environment,
     )
 

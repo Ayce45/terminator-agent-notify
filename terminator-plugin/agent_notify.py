@@ -1,9 +1,9 @@
 """Terminator D-Bus service for Claude and Codex notifications.
 
-Install this plugin together with the sibling ``core`` directory:
+Install this plugin together with the uniquely named sibling core package:
 
     ~/.config/terminator/plugins/agent_notify.py
-    ~/.config/terminator/core/runtime_state.py
+    ~/.config/terminator/terminator_agent_notify_core/runtime_state.py
 
 The local import boundary below makes that installed layout work while keeping
 the service constructor injectable for tests.
@@ -33,19 +33,26 @@ def _load_runtime_state():
 
     Terminator imports plugins directly from its ``plugins`` directory, which
     does not normally include its parent on ``sys.path``.  The installer copies
-    ``core`` beside that directory, so make this explicit rather than relying
-    on the caller's working directory.
+    ``terminator_agent_notify_core`` beside that directory, so make this
+    explicit rather than relying on the caller's working directory.
     """
 
     configuration_root = str(Path(__file__).resolve().parent.parent)
     if configuration_root not in sys.path:
         sys.path.insert(0, configuration_root)
-    from core.runtime_state import RuntimeState
+    from terminator_agent_notify_core.runtime_state import RuntimeState
 
     return RuntimeState
 
 
 RuntimeState = _load_runtime_state()
+
+try:
+    from terminator_agent_notify_core.autoresume_guard import read_persisted_environment
+
+    _PERSISTED_ENVIRONMENT = read_persisted_environment()
+except (ImportError, OSError, ValueError):
+    _PERSISTED_ENVIRONMENT = {}
 
 # Ensure notification action and close signals are received in Terminator's
 # long-lived GLib main loop. It is harmless if another component did this too.
@@ -64,7 +71,7 @@ ICON_PATH = str(Path(__file__).resolve().parent.parent / "assets" / "claude.png"
 
 
 def _env_enabled(name, default=True):
-    value = os.environ.get(name)
+    value = os.environ.get(name, _PERSISTED_ENVIRONMENT.get(name))
     if value is None:
         return default
     return value.strip().lower() not in {"0", "false", "no", "off"}
@@ -72,14 +79,21 @@ def _env_enabled(name, default=True):
 
 def _env_expiry_ms():
     try:
-        return max(0, int(os.environ.get("TERMINATOR_AGENT_NOTIFY_EXPIRY_MS", "0")))
+        value = os.environ.get(
+            "TERMINATOR_AGENT_NOTIFY_EXPIRY_MS",
+            _PERSISTED_ENVIRONMENT.get("TERMINATOR_AGENT_NOTIFY_EXPIRY_MS", "0"),
+        )
+        return max(0, int(value))
     except ValueError:
         return 0
 
 
 NOTIFICATIONS_ENABLED = _env_enabled("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS")
 NOTIFICATION_EXPIRY_MS = _env_expiry_ms()
-LOG_LEVEL = os.environ.get("TERMINATOR_AGENT_NOTIFY_LOG_LEVEL", "info").lower()
+LOG_LEVEL = os.environ.get(
+    "TERMINATOR_AGENT_NOTIFY_LOG_LEVEL",
+    _PERSISTED_ENVIRONMENT.get("TERMINATOR_AGENT_NOTIFY_LOG_LEVEL", "info"),
+).lower()
 if LOG_LEVEL not in {"quiet", "info", "debug"}:
     LOG_LEVEL = "info"
 
@@ -413,6 +427,9 @@ class FocusService(dbus.service.Object):
             )
         except Exception as exception:
             _log("Notify failed: %s" % exception)
+            return 0
+        if notification_id <= 0:
+            _log("Notify returned a nonpositive notification id")
             return 0
         self._track(
             agent,

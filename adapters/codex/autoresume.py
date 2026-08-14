@@ -18,7 +18,8 @@ from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from core.runtime_state import RuntimeState
+from terminator_agent_notify_core.autoresume_guard import generation_is_current
+from terminator_agent_notify_core.runtime_state import RuntimeState
 
 
 SEND = ROOT / "adapters" / "codex" / "send.sh"
@@ -40,7 +41,9 @@ _TIMESTAMP_KEYS = frozenset(("timestamp", "created_at", "createdat", "time"))
 _STATUS_KEYS = frozenset(("status", "code", "http_status", "apierrorstatus", "error_code"))
 _LIMIT_STATUS_VALUES = frozenset(("rate_limit_exceeded",))
 _RESET_KEYS = frozenset(("resetat", "reset_at", "resettime", "reset_time"))
-_MARKER_NAME = re.compile(r"^[0-9a-f]{64}-(\d+)\.scheduled$")
+_MARKER_NAME = re.compile(
+    r"^[0-9a-f]{64}-(\d+)(?:-[0-9a-f]{16})?\.scheduled$"
+)
 
 
 class TranscriptError(ValueError):
@@ -231,9 +234,12 @@ def _prune_markers(directory: Path, now_epoch: int) -> None:
                 pass
 
 
-def _marker_path(directory: Path, session_id: str, reset_epoch: int) -> Path:
+def _marker_path(
+    directory: Path, session_id: str, reset_epoch: int, generation: str
+) -> Path:
     session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
-    return directory / f"{session_hash}-{reset_epoch}.scheduled"
+    generation_hash = hashlib.sha256(generation.encode("utf-8")).hexdigest()[:16]
+    return directory / f"{session_hash}-{reset_epoch}-{generation_hash}.scheduled"
 
 
 def _claim_marker(path: Path) -> bool:
@@ -267,6 +273,10 @@ def process(
     if os.environ.get("CODEX_AUTORESUME") != "1":
         return False
     try:
+        generation = os.environ.get("CODEX_AUTORESUME_GENERATION", "")
+        config_path = os.environ.get("TERMINATOR_AGENT_NOTIFY_CONFIG", "")
+        if not generation_is_current("codex", config_path, generation):
+            return False
         now = clock().astimezone(timezone.utc)
         runtime = state or RuntimeState()
         marker_directory = _marker_directory(runtime)
@@ -292,17 +302,18 @@ def process(
         session_id = _session_id(limit, sid or Path(path).stem)
         reset_epoch = int(reset.timestamp())
         delay = max(1, int((reset - now).total_seconds()))
-        marker = _marker_path(marker_directory, session_id, reset_epoch)
+        marker = _marker_path(marker_directory, session_id, reset_epoch, generation)
         if not _claim_marker(marker):
             return False
         message = os.environ.get("CODEX_AUTORESUME_MESSAGE", "continue")
         session_prefix = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
         command = [
             "systemd-run", "--user", "--collect",
-            f"--unit=codex-autoresume-{session_prefix}-{reset_epoch}",
+            f"--unit=terminator-agent-notify-codex-autoresume-{session_prefix}-{reset_epoch}",
             f"--on-active={delay}s", "--timer-property=AccuracySec=1s",
             f"--description=Codex auto-resume after usage limit ({message})",
             str(SEND), "--session", session_id, "--message", message, "--notify",
+            "--generation", generation, "--config", config_path,
         ]
         try:
             result = scheduler(command)

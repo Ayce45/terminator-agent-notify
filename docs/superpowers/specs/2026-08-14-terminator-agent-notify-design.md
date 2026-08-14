@@ -35,9 +35,9 @@ graphical settings application are outside version 1.
 
 ```text
 terminator-agent-notify/
-├── core/
-│   ├── notification-client.sh
-│   └── runtime-state.sh
+├── terminator_agent_notify_core/
+│   ├── autoresume_guard.py
+│   └── runtime_state.py
 ├── adapters/
 │   ├── claude/
 │   │   ├── hooks/
@@ -58,9 +58,10 @@ terminator-agent-notify/
 └── README.md
 ```
 
-The core owns agent-independent notification transport and runtime-state
-conventions. Each adapter owns lifecycle event parsing, configuration changes,
-agent-specific decisions, transcript handling, and user-facing wording.
+The uniquely named core package owns agent-independent runtime-state and
+auto-resume generation conventions. Each adapter owns lifecycle event parsing,
+configuration changes, agent-specific decisions, transcript handling, and
+user-facing wording.
 
 The Terminator plugin is a single long-lived notification owner. It owns D-Bus
 notification IDs, receives action signals, focuses panes, optionally injects

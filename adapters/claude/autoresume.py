@@ -17,7 +17,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from core.runtime_state import RuntimeState
+from terminator_agent_notify_core.autoresume_guard import generation_is_current
+from terminator_agent_notify_core.runtime_state import RuntimeState
 
 
 SEND = ROOT / "adapters" / "claude" / "send.sh"
@@ -26,6 +27,8 @@ MESSAGE = os.environ.get("CLAUDE_AUTORESUME_MESSAGE", "continue")
 BUFFER = int(os.environ.get("CLAUDE_AUTORESUME_BUFFER", "90"))
 FRESH_SEC = 600
 SCAN_MTIME_MIN = 15
+SCHEDULER_TIMEOUT_SECONDS = 5
+_POSITIVE_NOTIFICATION_REPLY = re.compile(rb"^\(uint32[ \t]+[1-9][0-9]*,\)$")
 
 
 def _texts(value, output):
@@ -53,13 +56,16 @@ def _parse_iso(value):
         return None
 
 
-def _marker_path(session_id, reset_epoch):
+def _marker_path(session_id, reset_epoch, generation):
     state = RuntimeState()
     directory = state.root / "autoresume" / hashlib.sha256(b"claude").hexdigest()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     directory.chmod(0o700)
     session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
-    return directory / f"{session_hash}-{reset_epoch // 60}.scheduled"
+    generation_hash = hashlib.sha256(generation.encode("utf-8")).hexdigest()[:16]
+    return directory / (
+        f"{session_hash}-{reset_epoch // 60}-{generation_hash}.scheduled"
+    )
 
 
 def _claim_marker(path):
@@ -89,15 +95,17 @@ def _notify(session_id, title, body):
             stderr=subprocess.STDOUT,
             timeout=5,
         )
-        if response.returncode == 0 and b"uint32 0" not in response.stdout:
+        if (
+            response.returncode == 0
+            and _POSITIVE_NOTIFICATION_REPLY.fullmatch(response.stdout.strip())
+        ):
             return
     except (OSError, subprocess.SubprocessError):
         pass
     command = ["notify-send", "--app-name=Claude Code"]
-    if "TERMINATOR_AGENT_NOTIFY_EXPIRY_MS" in os.environ:
-        command.append(
-            f"--expire-time={os.environ['TERMINATOR_AGENT_NOTIFY_EXPIRY_MS']}"
-        )
+    expiry = os.environ.get("TERMINATOR_AGENT_NOTIFY_EXPIRY_MS")
+    if expiry:
+        command.append(f"--expire-time={expiry}")
     command.extend((title, body))
     try:
         subprocess.run(command, timeout=5)
@@ -136,6 +144,10 @@ def process(path, sid=None):
     """Schedule one resume for a fresh, unrecovered 429 transcript event."""
     if os.environ.get("CLAUDE_AUTORESUME", "1") == "0":
         return False
+    generation = os.environ.get("CLAUDE_AUTORESUME_GENERATION", "")
+    config_path = os.environ.get("TERMINATOR_AGENT_NOTIFY_CONFIG", "")
+    if not generation_is_current("claude", config_path, generation):
+        return False
     objects = _load_objects(path)
     index, limit = _latest_limit(objects)
     if limit is None or any(_is_assistant_reply(value) for value in objects[index + 1 :]):
@@ -164,11 +176,14 @@ def process(path, sid=None):
     reset_epoch = int(target.timestamp())
     delay = max(1, int((target - now).total_seconds()))
     session_id = limit.get("session_id") or limit.get("sessionId") or sid or Path(path).stem
-    marker = _marker_path(session_id, reset_epoch)
+    marker = _marker_path(session_id, reset_epoch, generation)
     if not _claim_marker(marker):
         return False
 
-    unit = f"claude-autoresume-{session_id[:8]}-{reset_epoch}"
+    session_prefix = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
+    unit = (
+        f"terminator-agent-notify-claude-autoresume-{session_prefix}-{reset_epoch}"
+    )
     try:
         subprocess.run(
             [
@@ -176,10 +191,12 @@ def process(path, sid=None):
                 f"--on-active={delay}s", "--timer-property=AccuracySec=1s",
                 f"--description=Claude auto-resume after usage limit ({MESSAGE})",
                 str(SEND), "--session", session_id, "--message", MESSAGE, "--notify", "--resume",
+                "--generation", generation, "--config", config_path,
             ],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
+            timeout=SCHEDULER_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError):
         marker.unlink(missing_ok=True)

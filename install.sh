@@ -161,7 +161,7 @@ snapshot_xwayland_desktop() {
 }
 
 missing=()
-for dependency in jq gdbus; do
+for dependency in jq gdbus timeout; do
   command -v "$dependency" >/dev/null 2>&1 || missing+=("$dependency")
 done
 [ "${#missing[@]}" -eq 0 ] || warn "Missing optional runtime dependencies: ${missing[*]}"
@@ -196,6 +196,7 @@ if command -v systemctl >/dev/null 2>&1; then
   systemctl --user daemon-reload || warn "systemd user daemon reload failed."
   if selected claude; then
     systemctl --user stop "$UNIT_PREFIX-claude-autoresume-*" 2>/dev/null || true
+    systemctl --user stop "claude-autoresume-*" 2>/dev/null || true
     if grep -qx 'CLAUDE_AUTORESUME=1' "$ENV_FILE"; then
       systemctl --user enable --now "$UNIT_PREFIX-claude-limit-poller.timer" || \
         warn "Could not enable the Claude usage-limit timer."
@@ -206,6 +207,7 @@ if command -v systemctl >/dev/null 2>&1; then
   fi
   if selected codex; then
     systemctl --user stop "$UNIT_PREFIX-codex-autoresume-*" 2>/dev/null || true
+    systemctl --user stop "codex-autoresume-*" 2>/dev/null || true
     if [ ! -f "$INSTALL_ROOT/adapters/codex/autoresume.py" ]; then
       systemctl --user disable --now "$UNIT_PREFIX-codex-limit-poller.timer" 2>/dev/null || true
       if [ "${CODEX_AUTORESUME:-0}" = 1 ]; then

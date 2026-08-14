@@ -8,8 +8,9 @@ boundaries with fakes, so it does not require a graphical display.
 ```bash
 python -m pip install pytest
 pytest -v
+bash tests/test_installation.sh
 find . -type f -name '*.sh' -print0 | xargs -0 bash -n
-python -m compileall -q core adapters terminator-plugin
+python -m compileall -q terminator_agent_notify_core adapters terminator-plugin
 git diff --check
 ```
 

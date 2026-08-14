@@ -17,6 +17,8 @@ focused=0
 enter=1
 notify=0
 resume=0
+generation=""
+config=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --session) session="$2"; shift 2 ;;
@@ -26,16 +28,58 @@ while [ "$#" -gt 0 ]; do
     --no-enter) enter=0; shift ;;
     --notify) notify=1; shift ;;
     --resume) resume=1; shift ;;
+    --generation) generation="$2"; shift 2 ;;
+    --config) config="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+generation_guard=0
+if [ "$resume" -eq 1 ] || [ -n "$generation" ] || [ -n "$config" ]; then
+  [ -n "$generation" ] && [ -n "$config" ] || exit 0
+  generation_guard=1
+fi
+generation_current() {
+  python3 - "$root" "$config" "$generation" <<'PY' || exit 0
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from terminator_agent_notify_core.autoresume_guard import generation_is_current
+
+raise SystemExit(0 if generation_is_current("claude", sys.argv[2], sys.argv[3]) else 1)
+PY
+}
+if [ "$generation_guard" -eq 1 ]; then
+  generation_current || exit 0
+fi
+
+notifications_enabled="${TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS:-1}"
+notification_expiry_ms="${TERMINATOR_AGENT_NOTIFY_EXPIRY_MS:-}"
+if [ "$generation_guard" -eq 1 ]; then
+  readarray -d '' -t persisted < <(python3 - "$root" "$config" \
+      TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS TERMINATOR_AGENT_NOTIFY_EXPIRY_MS <<'PY'
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from terminator_agent_notify_core.autoresume_guard import read_persisted_environment
+
+values = read_persisted_environment(sys.argv[2])
+for key in sys.argv[3:]:
+    present = "1" if key in values else "0"
+    sys.stdout.buffer.write(present.encode() + b"\0")
+    sys.stdout.buffer.write(values.get(key, "").encode() + b"\0")
+PY
+  )
+  [ "${persisted[0]:-0}" = 1 ] && notifications_enabled="${persisted[1]-}"
+  [ "${persisted[2]:-0}" = 1 ] && notification_expiry_ms="${persisted[3]-}"
+fi
 
 if [ -z "$pane" ] && [ -n "$session" ]; then
   pane=$(python3 - "$root" "$session" <<'PY'
 import sys
 
 sys.path.insert(0, sys.argv[1])
-from core.runtime_state import RuntimeState
+from terminator_agent_notify_core.runtime_state import RuntimeState
 
 print(RuntimeState().read_pane("claude", sys.argv[2]) or "")
 PY
@@ -50,6 +94,9 @@ fi
 [ -n "$pane" ] || { echo "could not resolve a pane uuid" >&2; exit 1; }
 
 send() {
+  if [ "$generation_guard" -eq 1 ]; then
+    generation_current || return 1
+  fi
   send_reply=$(timeout "${COMMAND_TIMEOUT_SECONDS}s" \
     gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
     --method "${BUS}.SendKeys" "$pane" "$2")
@@ -74,7 +121,10 @@ else
   send single "$keys"
 fi
 
-if [ "$notify" -eq 1 ] && [ "${TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS:-1}" != "0" ]; then
+if [ "$notify" -eq 1 ] && [ "$notifications_enabled" != "0" ]; then
+  if [ "$generation_guard" -eq 1 ]; then
+    generation_current || exit 0
+  fi
   payload=$(python3 - "$message" <<'PY'
 import json
 import sys
@@ -88,8 +138,8 @@ PY
       2>/dev/null || true)
   if ! [[ "$notify_reply" =~ ^\(uint32[[:space:]]+[1-9][0-9]*,\)$ ]]; then
     notify_args=(--app-name="Claude Code" --icon="${HOME}/.claude/assets/claude.png")
-    if [ -n "${TERMINATOR_AGENT_NOTIFY_EXPIRY_MS:-}" ]; then
-      notify_args+=(--expire-time="$TERMINATOR_AGENT_NOTIFY_EXPIRY_MS")
+    if [ -n "$notification_expiry_ms" ]; then
+      notify_args+=(--expire-time="$notification_expiry_ms")
     fi
     command -v notify-send >/dev/null 2>&1 && \
       timeout "${COMMAND_TIMEOUT_SECONDS}s" \

@@ -1,4 +1,4 @@
-"""Private, agent-neutral runtime state shared by adapters."""
+"""Private runtime state shared by Terminator Agent Notify adapters."""
 
 from __future__ import annotations
 

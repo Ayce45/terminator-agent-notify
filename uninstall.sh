@@ -28,6 +28,13 @@ UNIT_PREFIX="terminator-agent-notify"
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m  %s\n' "$*" >&2; }
+cleanup_bytecode_tree() {
+  local tree=$1
+  [ -d "$tree" ] || return 0
+  find "$tree" -depth -type f -path '*/__pycache__/*.pyc' -delete 2>/dev/null || true
+  find "$tree" -depth -type d -name __pycache__ -empty -delete 2>/dev/null || true
+  find "$tree" -depth -type d -empty -delete 2>/dev/null || true
+}
 selected() {
   local wanted=$1 agent
   for agent in "${agents[@]}"; do
@@ -105,6 +112,7 @@ for agent in "${agents[@]}"; do
   fi
   if command -v systemctl >/dev/null 2>&1; then
     systemctl --user stop "$UNIT_PREFIX-$agent-autoresume-*" 2>/dev/null || true
+    systemctl --user stop "$agent-autoresume-*" 2>/dev/null || true
     systemctl --user disable --now "$UNIT_PREFIX-$agent-limit-poller.timer" 2>/dev/null || true
   fi
   if [ -f "$MANAGED_FILES" ]; then
@@ -113,6 +121,12 @@ for agent in "${agents[@]}"; do
       --environment-file "$ENV_FILE" --terminator-root "$TERMINATOR_ROOT" \
       --install-root "$INSTALL_ROOT" --systemd-user "$SYSTEMD_USER" \
       --home "$HOME" "$agent"
+  fi
+  cleanup_bytecode_tree "$INSTALL_ROOT/adapters/$agent"
+  if [ "$agent" = codex ]; then
+    rm -f "$INSTALL_ROOT/adapters/__pycache__/__init__.pyc" \
+      "$INSTALL_ROOT/adapters/__pycache__"/__init__.*.pyc
+    rmdir "$INSTALL_ROOT/adapters/__pycache__" 2>/dev/null || true
   fi
 done
 if command -v systemctl >/dev/null 2>&1; then
@@ -130,12 +144,10 @@ if [ "${#active_agents[@]}" -eq 0 ]; then
   fi
   rm -f "$TERMINATOR_ROOT/plugins/__pycache__/agent_notify.pyc" \
     "$TERMINATOR_ROOT/plugins/__pycache__"/agent_notify.*.pyc
-  rm -f "$TERMINATOR_ROOT/core/__pycache__/__init__.pyc" \
-    "$TERMINATOR_ROOT/core/__pycache__"/__init__.*.pyc \
-    "$TERMINATOR_ROOT/core/__pycache__/runtime_state.pyc" \
-    "$TERMINATOR_ROOT/core/__pycache__"/runtime_state.*.pyc
   rmdir "$TERMINATOR_ROOT/plugins/__pycache__" 2>/dev/null || true
-  rmdir "$TERMINATOR_ROOT/core/__pycache__" 2>/dev/null || true
+  cleanup_bytecode_tree "$TERMINATOR_ROOT/terminator_agent_notify_core"
+  cleanup_bytecode_tree "$INSTALL_ROOT/terminator_agent_notify_core"
+  cleanup_bytecode_tree "$INSTALL_ROOT"
   rm -f "$ENV_FILE"
   if [ -f "$XWAYLAND_OWNED" ] && [ -x "$SRC_DIR/scripts/force-xwayland.sh" ]; then
     if "$SRC_DIR/scripts/force-xwayland.sh" --undo-owned \

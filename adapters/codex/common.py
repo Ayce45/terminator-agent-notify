@@ -14,7 +14,11 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from core.runtime_state import RuntimeState
+from terminator_agent_notify_core.autoresume_guard import read_persisted_environment
+from terminator_agent_notify_core.runtime_state import RuntimeState
+
+
+_PERSISTED_ENVIRONMENT = read_persisted_environment()
 
 
 AGENT = "codex"
@@ -95,10 +99,9 @@ def _fallback_notification(title: str, body: str) -> None:
     if shutil.which("notify-send") is None:
         return
     command = ["notify-send", "--app-name=Codex"]
-    if "TERMINATOR_AGENT_NOTIFY_EXPIRY_MS" in os.environ:
-        command.append(
-            f"--expire-time={os.environ['TERMINATOR_AGENT_NOTIFY_EXPIRY_MS']}"
-        )
+    expiry = _environment_value("TERMINATOR_AGENT_NOTIFY_EXPIRY_MS")
+    if expiry:
+        command.append(f"--expire-time={expiry}")
     command.extend((title, body))
     try:
         subprocess.Popen(
@@ -114,7 +117,12 @@ def _fallback_notification(title: str, body: str) -> None:
 
 
 def notifications_enabled() -> bool:
-    return os.environ.get("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", "1") != "0"
+    return _environment_value("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", "1") != "0"
+
+
+def _environment_value(name: str, default: str | None = None) -> str | None:
+    """Resolve an explicit process override before installer-persisted controls."""
+    return os.environ.get(name, _PERSISTED_ENVIRONMENT.get(name, default))
 
 
 def dismiss_request(session_id: str, request_id: str) -> None:

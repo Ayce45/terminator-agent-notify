@@ -7,7 +7,7 @@ import sys
 import types
 from pathlib import Path
 
-from core.runtime_state import RuntimeState
+from terminator_agent_notify_core.runtime_state import RuntimeState
 
 
 class FakeNotifications:

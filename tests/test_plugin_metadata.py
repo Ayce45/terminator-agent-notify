@@ -307,11 +307,44 @@ def test_duplicate_notification_id_cannot_link_old_request_to_new_request(tmp_pa
     assert notifications.closed == [second]
 
 
+def test_nonpositive_notification_id_is_never_actionable(tmp_path):
+    service, notifications, state = make_service(tmp_path)
+    notifications.notification_ids[:] = [0]
+
+    notification_id = service.notify(
+        "codex", "s1", "r1", "pane", "permission", PAYLOAD
+    )
+    service.on_action(0, "approve")
+
+    assert notification_id == 0
+    assert service._notif_meta == {}
+    assert service._session_notifs == {}
+    assert service._request_notifs == {}
+    assert state.consume_decision("codex", "s1", "r1") is None
+
+
 def test_notifications_can_be_disabled_by_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", "0")
     service, notifications, _state = make_service(tmp_path)
 
     assert service.notify("codex", "s1", "r1", "pane", "permission", PAYLOAD) == 0
+    assert notifications.created == []
+
+
+def test_persisted_notification_disable_reaches_plugin(tmp_path, monkeypatch):
+    monkeypatch.delenv("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", raising=False)
+    state_home = tmp_path / "state"
+    config = state_home / "terminator-agent-notify" / "environment"
+    config.parent.mkdir(mode=0o700, parents=True)
+    config.write_text(
+        "TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS=0\n", encoding="utf-8"
+    )
+    config.chmod(0o600)
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_CONFIG", str(config))
+    service, notifications, _state = make_service(tmp_path / "runtime")
+
+    assert service.notify("claude", "s1", "", "pane", "complete", PAYLOAD) == 0
     assert notifications.created == []
 
 

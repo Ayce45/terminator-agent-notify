@@ -109,11 +109,16 @@ def _candidates(arguments: argparse.Namespace) -> dict[Path, Candidate]:
     )
     _add_tree(
         candidates,
-        source / "core",
-        arguments.terminator_root / "core",
+        source / "terminator_agent_notify_core",
+        arguments.terminator_root / "terminator_agent_notify_core",
         "shared",
     )
-    _add_tree(candidates, source / "core", arguments.install_root / "core", "shared")
+    _add_tree(
+        candidates,
+        source / "terminator_agent_notify_core",
+        arguments.install_root / "terminator_agent_notify_core",
+        "shared",
+    )
     _add_tree(
         candidates,
         source / "assets",
@@ -125,6 +130,10 @@ def _candidates(arguments: argparse.Namespace) -> dict[Path, Candidate]:
     escaped_environment = _systemd_escape(arguments.environment_file)
     for agent in arguments.agents:
         scope = f"agent:{agent}"
+        if agent == "codex":
+            candidates[arguments.install_root / "adapters" / "__init__.py"] = (
+                _candidate_from_file(source / "adapters" / "__init__.py", scope)
+            )
         _add_tree(
             candidates,
             source / "adapters" / agent,

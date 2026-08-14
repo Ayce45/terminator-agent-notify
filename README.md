@@ -23,9 +23,10 @@ Approve and Deny actions.
 - Python 3. The installed Terminator Python environment must have its normal
   GTK and D-Bus bindings (`gi` and `dbus`), as provided by a working Terminator
   installation.
-- `gdbus` for the full plugin integration and `jq` for Claude hooks. The
-  installer warns when either is missing. `notify-send` is optional and is only
-  the non-actionable fallback when the plugin cannot be reached.
+- `gdbus` for the full plugin integration, `jq` for Claude hooks, and GNU
+  `timeout` to bound Claude desktop commands. The installer warns when any of
+  these commands is missing. `notify-send` is optional and is only the
+  non-actionable fallback when the plugin cannot be reached.
 - Claude Code for the Claude adapter, Codex CLI for the Codex adapter, or both.
 - `systemd --user` is needed only for automatic usage-limit resume. Units are
   installed without it but cannot be enabled.
@@ -45,13 +46,22 @@ Clone this repository and run exactly one target command from its root:
 
 The installer copies adapters below
 `${XDG_DATA_HOME:-~/.local/share}/terminator-agent-notify`, installs the shared
-plugin below `${XDG_CONFIG_HOME:-~/.config}/terminator`, and records its
+plugin and uniquely named `terminator_agent_notify_core` package below
+`${XDG_CONFIG_HOME:-~/.config}/terminator`, and records its
 installation state below `${XDG_STATE_HOME:-~/.local/state}/terminator-agent-notify`.
 It merges only entries marked `terminator-agent-notify:` into
 `~/.claude/settings.json` or `~/.codex/hooks.json`; unrelated hooks and
 settings remain in place. A changed JSON configuration is backed up beside the
 original as `*.bak.<timestamp>`. Re-running an unchanged installation is
 idempotent.
+
+Fixed plugin, core-package, adapter, and systemd destinations are hash tracked.
+The installer refuses to overwrite an unrelated or locally changed file at one
+of those paths. Selective uninstall removes only a file whose current hash
+still matches the project-owned manifest; locally changed files are preserved
+with a warning. The user units are uniquely prefixed, for example
+`terminator-agent-notify-claude-limit-poller.timer` and
+`terminator-agent-notify-codex-limit-poller.timer`.
 
 Restart Terminator, then enable **AgentNotify** in Terminator Preferences if it
 is not already enabled. Start a Codex session after installing its adapter and
@@ -90,18 +100,30 @@ Codex handles its native `PermissionRequest` hook as follows:
 
 - Approve emits Codex's `allow` hook response; Deny emits `deny`.
 - The default wait is `CODEX_NOTIFY_APPROVAL_TIMEOUT=300` seconds. Invalid,
-  negative, or non-finite values fall back to 300; `0` declines to wait.
+  negative, or non-finite values fall back to 300; `0` declines to wait, and
+  the maximum is 300 seconds even when a larger value is configured. The
+  installed Codex host timeout is 316 seconds, leaving two five-second D-Bus
+  budgets, a five-second cleanup margin, and one additional second beyond the
+  maximum approval wait.
 - A notification close, expiry, service failure, timeout, interrupt, or stale
   action returns no decision, so Codex falls back to its normal interactive
   approval flow. Those cases never imply approval or denial.
 - Decisions are private, atomic, single-use files keyed by agent, session, and
   request ID; a decision for another request cannot authorize the current one.
 
-Usage-limit resume values are environment variables read by the adapters or
-their installed systemd user services:
+Generic notification and auto-resume values are captured by `install.sh` in the
+private `${XDG_STATE_HOME:-~/.local/state}/terminator-agent-notify/environment`
+file. Re-run the matching install command with new values to change them. Hooks
+and the installed systemd user services read that file. Restart Terminator
+after changing notification, expiry, or plugin log controls because the
+long-lived plugin reads them when it loads. Runtime-only values such as the
+Codex approval timeout are read directly from the agent process environment:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS` | `1` | Set exactly `0` to suppress desktop notifications without disabling pane tracking or cleanup. |
+| `TERMINATOR_AGENT_NOTIFY_EXPIRY_MS` | unset | Non-negative expiry passed to notification backends. Leave unset to preserve each backend's established default; use a positive value for a consistent finite expiry. |
+| `TERMINATOR_AGENT_NOTIFY_LOG_LEVEL` | `info` | `quiet` disables plugin logging, `info` records normal events, and `debug` adds diagnostic events. Invalid values use `info`. |
 | `CLAUDE_AUTORESUME` | `1` | Set `0` to disable Claude's established auto-resume. |
 | `CLAUDE_AUTORESUME_MESSAGE` | `continue` | Message sent after the Claude reset. |
 | `CLAUDE_AUTORESUME_BUFFER` | `90` | Extra seconds after the parsed Claude reset time. |
@@ -115,9 +137,14 @@ The installer also follows the standard XDG location variables. If they are
 unset, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_STATE_HOME` default to
 `~/.config`, `~/.local/share`, and `~/.local/state` respectively.
 `XDG_SESSION_TYPE=wayland` is what enables the installer’s XWayland prompt.
-`XDG_RUNTIME_DIR` selects the private runtime state and plugin-log directory;
-without it, runtime state falls back to `/tmp/terminator-agent-notify-<uid>`
-and the plugin log falls back to `/tmp/terminator-agent-notify.log`.
+`XDG_RUNTIME_DIR` selects the private runtime state directory. If
+`XDG_STATE_HOME` is explicitly set, the plugin log is
+`$XDG_STATE_HOME/terminator-agent-notify/plugin.log`; otherwise it is
+`$XDG_RUNTIME_DIR/terminator-agent-notify/plugin.log`. Without either XDG
+location, both use the private per-UID `/tmp/terminator-agent-notify-<uid>`
+directory. Runtime and log roots reject symlinks, non-directories, and paths
+owned by another UID before changing permissions; log files are opened without
+following symlinks and kept at mode `0600`.
 `TERMINATOR_UUID` is normally inherited from Terminator by a session-start hook
 and should not need to be set manually; when absent, the hook tries the current
 focused pane as a less reliable fallback.
@@ -136,12 +163,20 @@ when their user timers are enabled. The `continue` message is injected into the
 mapped pane, so review any custom resume message as carefully as a command you
 would type yourself.
 
+Every delayed resume carries a rotating generation token from the private
+environment file and validates that token immediately before injecting keys.
+Reinstalling, disabling an adapter, or uninstalling it rotates/invalidates the
+token and stops project-owned transient jobs, so an already scheduled old job
+becomes inert. Claude auto-resume is enabled unless installed with
+`CLAUDE_AUTORESUME=0`; Codex auto-resume is disabled unless installed with
+`CODEX_AUTORESUME=1`.
+
 ## Logs and troubleshooting
 
-The Terminator plugin appends to
-`${XDG_RUNTIME_DIR:-/tmp}/terminator-agent-notify.log`; adapter auto-resume
-diagnostics go to the invoked service or command's stderr (for example,
-`journalctl --user -u codex-limit-poller.service`). Runtime pane mappings,
+The Terminator plugin appends to the private `plugin.log` location described
+above; adapter auto-resume diagnostics go to the invoked service or command's
+stderr (for example, `journalctl --user -u
+terminator-agent-notify-codex-limit-poller.service`). Runtime pane mappings,
 pending decisions, closure state, and resume de-duplication markers are private
 (`0700` directories and `0600` files) below
 `${XDG_RUNTIME_DIR}/terminator-agent-notify`, or
@@ -150,9 +185,11 @@ pending decisions, closure state, and resume de-duplication markers are private
 Useful checks:
 
 ```bash
-systemctl --user status claude-limit-poller.timer codex-limit-poller.timer
-journalctl --user -u claude-limit-poller.service -u codex-limit-poller.service
-tail -f "${XDG_RUNTIME_DIR:-/tmp}/terminator-agent-notify.log"
+systemctl --user status terminator-agent-notify-claude-limit-poller.timer terminator-agent-notify-codex-limit-poller.timer
+journalctl --user -u terminator-agent-notify-claude-limit-poller.service -u terminator-agent-notify-codex-limit-poller.service
+# Log: $XDG_STATE_HOME/terminator-agent-notify/plugin.log when XDG_STATE_HOME is set;
+# otherwise $XDG_RUNTIME_DIR/terminator-agent-notify/plugin.log or
+# /tmp/terminator-agent-notify-$(id -u)/plugin.log.
 ```
 
 If focus works in the current window but not across windows on Wayland, use the
@@ -161,6 +198,9 @@ notification disappears, expires, or has no buttons, approve or deny in Codex's
 normal terminal UI instead; do not assume any action was applied. If hooks do
 not fire after installation, restart the agent, inspect its merged configuration
 for `terminator-agent-notify:` entries, and complete Codex's hook trust review.
+Restarting or replacing the desktop notification daemon retires all tracked
+requests; pending Codex approvals then fall back to the terminal rather than
+accepting an action from a reused daemon notification ID.
 
 ## Selective uninstall, migration, and rollback
 
@@ -173,11 +213,11 @@ Remove only the adapter you mean to remove:
 ```
 
 Removing one adapter preserves the other and the shared plugin. The shared
-plugin, shared core, and project-owned XWayland changes are removed only after
-no managed adapter remains. Uninstall removes only project-marked hook entries;
-it never restores an entire backup over newer user changes. It also deliberately
-leaves `~/.claude/assets/claude.png` and `claude.svg` in place (see the artwork
-notice above).
+plugin, shared core package, and project-owned XWayland changes are removed only
+after no managed adapter remains. Uninstall removes only project-marked hook
+entries; it never restores an entire backup over newer user changes. It also
+deliberately leaves `~/.claude/assets/claude.png` and `claude.svg` in place (see
+the artwork notice above).
 
 To migrate from `claude-terminator-notify` safely:
 

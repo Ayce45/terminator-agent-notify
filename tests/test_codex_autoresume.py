@@ -5,7 +5,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from core.runtime_state import RuntimeState
+from terminator_agent_notify_core.runtime_state import RuntimeState
 
 
 ROOT = Path(__file__).parents[1]
@@ -27,6 +27,14 @@ def _load_autoresume():
 def _environment(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
     monkeypatch.setenv("CODEX_AUTORESUME", "1")
+    monkeypatch.setenv("CODEX_AUTORESUME_GENERATION", "codex-generation")
+    config = tmp_path / "environment"
+    config.write_text(
+        "CODEX_AUTORESUME=1\nCODEX_AUTORESUME_GENERATION=codex-generation\n",
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_CONFIG", str(config))
 
 
 def test_disabled_mode_never_schedules(tmp_path, monkeypatch):
@@ -76,7 +84,7 @@ def test_unambiguous_future_limit_schedules_once(tmp_path, monkeypatch):
             "systemd-run",
             "--user",
             "--collect",
-            "--unit=codex-autoresume-57b756c6e2183717-1786712700",
+            "--unit=terminator-agent-notify-codex-autoresume-57b756c6e2183717-1786712700",
             "--on-active=300s",
             "--timer-property=AccuracySec=1s",
             "--description=Codex auto-resume after usage limit (continue)",
@@ -86,7 +94,43 @@ def test_unambiguous_future_limit_schedules_once(tmp_path, monkeypatch):
             "--message",
             "continue",
             "--notify",
+            "--generation",
+            "codex-generation",
+            "--config",
+            str(tmp_path / "environment"),
         ]
+    ]
+
+
+def test_generation_rotation_allows_same_codex_limit_to_be_rescheduled(
+    tmp_path, monkeypatch
+):
+    """A stale marker must not suppress the replacement job after reinstall."""
+    module = _load_autoresume()
+    _environment(tmp_path, monkeypatch)
+    config = Path(os.environ["TERMINATOR_AGENT_NOTIFY_CONFIG"])
+    scheduled = []
+
+    assert module.process(
+        FIXTURES / "limit_with_reset.jsonl",
+        clock=lambda: NOW,
+        scheduler=scheduled.append,
+    ) is True
+    monkeypatch.setenv("CODEX_AUTORESUME_GENERATION", "second-generation")
+    config.write_text(
+        "CODEX_AUTORESUME=1\nCODEX_AUTORESUME_GENERATION=second-generation\n",
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
+    assert module.process(
+        FIXTURES / "limit_with_reset.jsonl",
+        clock=lambda: NOW,
+        scheduler=scheduled.append,
+    ) is True
+
+    assert [command[command.index("--generation") + 1] for command in scheduled] == [
+        "codex-generation",
+        "second-generation",
     ]
 
 
@@ -159,15 +203,28 @@ def test_nested_status_only_limit_with_offset_reset_schedules(tmp_path, monkeypa
         clock=lambda: NOW,
         scheduler=scheduled.append,
     ) is True
-    assert scheduled[0][3].startswith("--unit=codex-autoresume-")
+    assert scheduled[0][3].startswith(
+        "--unit=terminator-agent-notify-codex-autoresume-"
+    )
     assert scheduled[0][4] == "--on-active=300s"
-    assert scheduled[0][-5:] == [
-        "--session",
-        "codex-session-nested",
-        "--message",
-        "continue",
-        "--notify",
-    ]
+    assert scheduled[0][scheduled[0].index("--session") + 1] == (
+        "codex-session-nested"
+    )
+
+
+def test_missing_generation_or_config_never_schedules(tmp_path, monkeypatch):
+    """Every delayed Codex execution needs a durable generation guard."""
+    module = _load_autoresume()
+    _environment(tmp_path, monkeypatch)
+    monkeypatch.delenv("CODEX_AUTORESUME_GENERATION")
+    scheduled = []
+
+    assert module.process(
+        FIXTURES / "limit_with_reset.jsonl",
+        clock=lambda: NOW,
+        scheduler=scheduled.append,
+    ) is False
+    assert scheduled == []
 
 
 def test_near_match_status_does_not_count_as_rate_limit():
@@ -304,12 +361,29 @@ def _send_environment(tmp_path, monkeypatch):
     return calls
 
 
+def _send_command(*arguments):
+    return [
+        str(ADAPTER / "send.sh"),
+        *arguments,
+        "--generation",
+        os.environ["CODEX_AUTORESUME_GENERATION"],
+        "--config",
+        os.environ["TERMINATOR_AGENT_NOTIFY_CONFIG"],
+    ]
+
+
 def test_send_resolves_the_current_pane_then_sends_message_and_enter(tmp_path, monkeypatch):
     """Using a stale pane mapping would type into a closed or wrong terminal."""
     calls = _send_environment(tmp_path, monkeypatch)
 
     subprocess.run(
-        [str(ADAPTER / "send.sh"), "--session", "codex-session-limit", "--message", "resume work", "--notify"],
+        _send_command(
+            "--session",
+            "codex-session-limit",
+            "--message",
+            "resume work",
+            "--notify",
+        ),
         env=os.environ.copy(),
         check=True,
         capture_output=True,
@@ -327,7 +401,7 @@ def test_false_send_ack_fails_without_notification(tmp_path, monkeypatch):
     monkeypatch.setenv("GDBUS_SEND_RESULT", "false")
 
     result = subprocess.run(
-        [str(ADAPTER / "send.sh"), "--session", "codex-session-limit", "--notify"],
+        _send_command("--session", "codex-session-limit", "--notify"),
         env=os.environ.copy(), capture_output=True, text=True,
     )
 
@@ -346,7 +420,7 @@ def test_zero_notification_reply_uses_fallback(tmp_path, monkeypatch):
     monkeypatch.setenv("NOTIFY_SEND_CALLS", str(fallback))
 
     subprocess.run(
-        [str(ADAPTER / "send.sh"), "--session", "codex-session-limit", "--notify"],
+        _send_command("--session", "codex-session-limit", "--notify"),
         env=os.environ.copy(), check=True, capture_output=True, text=True,
     )
 
@@ -369,7 +443,7 @@ def test_generic_notification_controls_reach_codex_send_fallback(
     monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_EXPIRY_MS", "4321")
 
     subprocess.run(
-        [str(ADAPTER / "send.sh"), "--session", "codex-session-limit", "--notify"],
+        _send_command("--session", "codex-session-limit", "--notify"),
         env=os.environ.copy(),
         check=True,
         capture_output=True,
@@ -387,7 +461,7 @@ def test_generic_notification_disable_keeps_codex_send_but_skips_notice(
     monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", "0")
 
     subprocess.run(
-        [str(ADAPTER / "send.sh"), "--session", "codex-session-limit", "--notify"],
+        _send_command("--session", "codex-session-limit", "--notify"),
         env=os.environ.copy(),
         check=True,
         capture_output=True,

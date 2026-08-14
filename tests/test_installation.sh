@@ -84,9 +84,22 @@ case "$install_output" in
 esac
 
 test -f "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
-test -f "$XDG_CONFIG_HOME/terminator/core/runtime_state.py"
+test -f "$XDG_CONFIG_HOME/terminator/terminator_agent_notify_core/runtime_state.py"
+test ! -e "$XDG_CONFIG_HOME/terminator/core"
+test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/__init__.py"
 test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude/autoresume.py"
 test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex/hooks/stop.py"
+(cd "$TEST_ROOT" && python3 -I "$ROOT/tests/installed_layout_import.py" \
+  "$XDG_CONFIG_HOME/terminator")
+(cd "$TEST_ROOT" && printf '{}\n' | python3 -I \
+  "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex/hooks/stop.py")
+mkdir -p "$TEST_ROOT/foreign/adapters"
+printf 'raise RuntimeError("foreign adapters package imported")\n' \
+  > "$TEST_ROOT/foreign/adapters/__init__.py"
+(cd "$TEST_ROOT" && printf '{}\n' | PYTHONPATH="$TEST_ROOT/foreign" python3 \
+  "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex/hooks/stop.py")
+test -d "$XDG_DATA_HOME/terminator-agent-notify/adapters/__pycache__"
+test -d "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex/__pycache__"
 test "$(stat -c %a "$XDG_STATE_HOME/terminator-agent-notify")" = 700
 test "$(stat -c %a "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters")" = 600
 ENV_FILE="$XDG_STATE_HOME/terminator-agent-notify/environment"
@@ -95,7 +108,7 @@ test "$(stat -c %a "$ENV_FILE")" = 600
 grep -qx 'CLAUDE_AUTORESUME=1' "$ENV_FILE"
 grep -qx 'CODEX_AUTORESUME=0' "$ENV_FILE"
 grep -qx 'TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS=1' "$ENV_FILE"
-grep -qx 'TERMINATOR_AGENT_NOTIFY_EXPIRY_MS=0' "$ENV_FILE"
+grep -qx "TERMINATOR_AGENT_NOTIFY_EXPIRY_MS=''" "$ENV_FILE"
 grep -qx 'TERMINATOR_AGENT_NOTIFY_LOG_LEVEL=info' "$ENV_FILE"
 claude_generation_before=$(sed -n 's/^CLAUDE_AUTORESUME_GENERATION=//p' "$ENV_FILE")
 codex_generation_before=$(sed -n 's/^CODEX_AUTORESUME_GENERATION=//p' "$ENV_FILE")
@@ -104,10 +117,11 @@ test "${#codex_generation_before}" -ge 32
 mkdir -p "$XDG_CONFIG_HOME/terminator/plugins/__pycache__"
 touch "$XDG_CONFIG_HOME/terminator/plugins/__pycache__/agent_notify.cpython-311.pyc"
 touch "$XDG_CONFIG_HOME/terminator/plugins/__pycache__/unrelated_plugin.cpython-311.pyc"
+mkdir -p "$XDG_CONFIG_HOME/terminator/terminator_agent_notify_core/__pycache__"
+touch "$XDG_CONFIG_HOME/terminator/terminator_agent_notify_core/__pycache__/__init__.cpython-311.pyc"
+touch "$XDG_CONFIG_HOME/terminator/terminator_agent_notify_core/__pycache__/runtime_state.cpython-311.pyc"
 mkdir -p "$XDG_CONFIG_HOME/terminator/core/__pycache__"
-touch "$XDG_CONFIG_HOME/terminator/core/__pycache__/__init__.cpython-311.pyc"
-touch "$XDG_CONFIG_HOME/terminator/core/__pycache__/runtime_state.cpython-311.pyc"
-touch "$XDG_CONFIG_HOME/terminator/core/__pycache__/unrelated_core.cpython-311.pyc"
+touch "$XDG_CONFIG_HOME/terminator/core/__pycache__/user_core.cpython-311.pyc"
 
 python3 - "$HOME/.claude/settings.json" "$HOME/.codex/hooks.json" <<'PY'
 import json
@@ -146,6 +160,8 @@ if grep -q '^Environment=CODEX_AUTORESUME=1$' \
   exit 1
 fi
 grep -q -- '--user enable --now terminator-agent-notify-claude-limit-poller.timer' "$SYSTEMCTL_LOG"
+grep -q -- '--user stop claude-autoresume-\*' "$SYSTEMCTL_LOG"
+grep -q -- '--user stop codex-autoresume-\*' "$SYSTEMCTL_LOG"
 if grep -q -- '--user enable --now terminator-agent-notify-codex-limit-poller.timer' "$SYSTEMCTL_LOG"; then
   echo "Codex timer enabled without CODEX_AUTORESUME=1" >&2
   exit 1
@@ -154,6 +170,7 @@ fi
 $ROOT/uninstall.sh codex >/dev/null
 test -d "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude"
 test ! -e "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex"
+test ! -e "$XDG_DATA_HOME/terminator-agent-notify/adapters/__pycache__"
 test -f "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
 grep -qx claude "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
 
@@ -162,6 +179,7 @@ CODEX_AUTORESUME=1 CODEX_AUTORESUME_MESSAGE='resume codex safely' \
   $ROOT/install.sh codex >/dev/null
 grep -q -- '--user enable --now terminator-agent-notify-codex-limit-poller.timer' "$SYSTEMCTL_LOG"
 grep -q -- '--user stop terminator-agent-notify-codex-autoresume-\*' "$SYSTEMCTL_LOG"
+grep -q -- '--user stop codex-autoresume-\*' "$SYSTEMCTL_LOG"
 grep -qx 'CODEX_AUTORESUME=1' "$ENV_FILE"
 grep -qx "CODEX_AUTORESUME_MESSAGE='resume codex safely'" "$ENV_FILE"
 codex_generation_enabled=$(sed -n 's/^CODEX_AUTORESUME_GENERATION=//p' "$ENV_FILE")
@@ -201,13 +219,15 @@ grep -qx codex "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
 
 $ROOT/uninstall.sh codex >/dev/null
 test ! -e "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
-test ! -e "$XDG_CONFIG_HOME/terminator/core/runtime_state.py"
+test ! -e "$XDG_CONFIG_HOME/terminator/terminator_agent_notify_core/runtime_state.py"
+test ! -e "$XDG_CONFIG_HOME/terminator/terminator_agent_notify_core"
+test ! -e "$XDG_DATA_HOME/terminator-agent-notify"
 test ! -e "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
 test ! -e "$XDG_CONFIG_HOME/terminator/plugins/__pycache__/agent_notify.cpython-311.pyc"
 test -e "$XDG_CONFIG_HOME/terminator/plugins/__pycache__/unrelated_plugin.cpython-311.pyc"
-test ! -e "$XDG_CONFIG_HOME/terminator/core/__pycache__/__init__.cpython-311.pyc"
-test ! -e "$XDG_CONFIG_HOME/terminator/core/__pycache__/runtime_state.cpython-311.pyc"
-test -e "$XDG_CONFIG_HOME/terminator/core/__pycache__/unrelated_core.cpython-311.pyc"
+test ! -e "$XDG_CONFIG_HOME/terminator/terminator_agent_notify_core/__pycache__/__init__.cpython-311.pyc"
+test ! -e "$XDG_CONFIG_HOME/terminator/terminator_agent_notify_core/__pycache__/runtime_state.cpython-311.pyc"
+test -e "$XDG_CONFIG_HOME/terminator/core/__pycache__/user_core.cpython-311.pyc"
 
 python3 - "$HOME/.claude/settings.json" "$HOME/.codex/hooks.json" <<'PY'
 import json

@@ -13,8 +13,11 @@ release record; redact session IDs, paths, and command arguments when needed.
   **AgentNotify** in Preferences.
 - [ ] For Codex, inspect `~/.codex/hooks.json`, review each installed
   `terminator-agent-notify:` command path, and complete Codex's trust prompt.
-- [ ] Start with `tail -f "${XDG_RUNTIME_DIR:-/tmp}/terminator-agent-notify.log"`
-  and save relevant plugin log lines.
+- [ ] Locate the private `plugin.log` under
+  `$XDG_STATE_HOME/terminator-agent-notify`,
+  `$XDG_RUNTIME_DIR/terminator-agent-notify`, or the per-UID
+  `/tmp/terminator-agent-notify-$(id -u)` fallback, then tail it and save
+  relevant plugin log lines.
 
 ## Claude-only session
 
@@ -30,7 +33,9 @@ release record; redact session IDs, paths, and command arguments when needed.
 - [ ] Trigger a Claude usage limit and confirm the arm notification, scheduled
   timer fallback behavior, resume message, and post-reset action match the
   configured `CLAUDE_AUTORESUME_*` values.
-  Evidence: `journalctl --user -u claude-limit-poller.service` excerpt.
+  Evidence: poller journal excerpt, `systemctl --user list-timers` output for
+  the `terminator-agent-notify-claude-autoresume-*` transient timer, and the
+  terminal result or plugin log proving the post-reset action.
 
 ## Codex-only session
 
@@ -48,7 +53,8 @@ release record; redact session IDs, paths, and command arguments when needed.
 - [ ] With `CODEX_AUTORESUME=1 ./install.sh codex`, use a safe test account or
   fixture-shaped recent session to verify an unambiguous usage-limit reset is
   scheduled once. Also verify ambiguous/stale input schedules nothing.
-  Evidence: `journalctl --user -u codex-limit-poller.service` and
+  Evidence: `journalctl --user -u
+  terminator-agent-notify-codex-limit-poller.service` and
   `systemctl --user list-timers` output.
 
 ## Simultaneous and display-backend checks

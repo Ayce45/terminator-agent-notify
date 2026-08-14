@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.runtime_state import RuntimeState
+from terminator_agent_notify_core.runtime_state import RuntimeState
 
 
 def test_agent_sessions_are_isolated(tmp_path):

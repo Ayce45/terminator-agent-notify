@@ -42,7 +42,7 @@ python3 - "$root" "$session_id" "$uuid" <<'PY' || true
 import sys
 
 sys.path.insert(0, sys.argv[1])
-from core.runtime_state import RuntimeState
+from terminator_agent_notify_core.runtime_state import RuntimeState
 
 RuntimeState().record_pane("claude", sys.argv[2], sys.argv[3])
 PY

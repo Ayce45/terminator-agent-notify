@@ -66,7 +66,9 @@ def _defaults(path: Path) -> dict[str, str]:
     return {
         "TERMINATOR_AGENT_NOTIFY_CONFIG": str(path),
         "TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS": "1",
-        "TERMINATOR_AGENT_NOTIFY_EXPIRY_MS": "0",
+        # Empty preserves each existing notification boundary's historical
+        # default. A configured non-negative value is passed through exactly.
+        "TERMINATOR_AGENT_NOTIFY_EXPIRY_MS": "",
         "TERMINATOR_AGENT_NOTIFY_LOG_LEVEL": "info",
         "CLAUDE_AUTORESUME": "1",
         "CLAUDE_AUTORESUME_GENERATION": "",
@@ -108,7 +110,7 @@ def update(path: Path, action: str, agents: list[str]) -> None:
             "0" if os.environ.get("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS") == "0" else "1"
         )
         values["TERMINATOR_AGENT_NOTIFY_EXPIRY_MS"] = _nonnegative_integer(
-            os.environ.get("TERMINATOR_AGENT_NOTIFY_EXPIRY_MS", "0"), "0"
+            os.environ.get("TERMINATOR_AGENT_NOTIFY_EXPIRY_MS", ""), ""
         )
         level = os.environ.get("TERMINATOR_AGENT_NOTIFY_LOG_LEVEL", "info").lower()
         values["TERMINATOR_AGENT_NOTIFY_LOG_LEVEL"] = (
