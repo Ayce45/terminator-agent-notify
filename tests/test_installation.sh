@@ -133,6 +133,9 @@ grep -qx claude "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
 : > "$SYSTEMCTL_LOG"
 CODEX_AUTORESUME=1 $ROOT/install.sh codex >/dev/null
 grep -q -- '--user enable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"
+: > "$SYSTEMCTL_LOG"
+$ROOT/install.sh codex >/dev/null
+grep -q -- '--user disable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"
 $ROOT/uninstall.sh claude >/dev/null
 test ! -e "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude"
 test -d "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex"

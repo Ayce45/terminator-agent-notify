@@ -248,6 +248,9 @@ if command -v systemctl >/dev/null 2>&1; then
     elif [ "${CODEX_AUTORESUME:-0}" = 1 ]; then
       systemctl --user enable --now codex-limit-poller.timer || \
         warn "Could not enable the experimental Codex usage-limit timer."
+    else
+      systemctl --user disable --now codex-limit-poller.timer 2>/dev/null || \
+        warn "Could not disable the experimental Codex usage-limit timer."
     fi
   fi
 else

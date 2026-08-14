@@ -36,8 +36,9 @@ PY
 fi
 [ -n "$pane" ] || { echo "could not resolve a pane uuid" >&2; exit 1; }
 
-gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
-  --method "${BUS}.SendKeys" "$pane" "${message}"$'\r' >/dev/null
+send_reply=$(gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
+  --method "${BUS}.SendKeys" "$pane" "${message}"$'\r')
+[ "$send_reply" = "(true,)" ] || { echo "SendKeys was not acknowledged" >&2; exit 1; }
 
 if [ "$notify" -eq 1 ]; then
   payload=$(python3 - "$message" <<'PY'
@@ -47,9 +48,10 @@ import sys
 print(json.dumps({"title": "Codex — relancé automatiquement", "body": f"« {sys.argv[1]} » envoyé après la fin de la limite."}))
 PY
 )
-  if ! gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
+  notify_reply=$(gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
       --method "${BUS}.Notify" "codex" "$session" "" "$pane" "waiting" "$payload" \
-      >/dev/null 2>&1; then
+      2>/dev/null || true)
+  if ! [[ "$notify_reply" =~ ^\(uint32[[:space:]]+[1-9][0-9]*,\)$ ]]; then
     command -v notify-send >/dev/null 2>&1 && \
       notify-send --app-name="Codex" "Codex — relancé automatiquement" \
         "« ${message} » envoyé après la fin de la limite." >/dev/null 2>&1 || true

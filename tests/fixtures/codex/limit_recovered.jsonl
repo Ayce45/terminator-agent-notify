@@ -1,0 +1,2 @@
+{"session_id":"codex-session-recovered","timestamp":"2026-08-14T13:00:00Z","event":{"status":"rate_limit_exceeded","message":"You've reached your usage limit. Resets at 2026-08-14T13:05:00Z."}}
+{"session_id":"codex-session-recovered","timestamp":"2026-08-14T13:01:00Z","event":{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I can continue now."}]}}}

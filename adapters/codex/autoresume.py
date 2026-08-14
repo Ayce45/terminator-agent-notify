@@ -25,6 +25,10 @@ SEND = ROOT / "adapters" / "codex" / "send.sh"
 SESSIONS = Path.home() / ".codex" / "sessions"
 MAX_RECORDS = 60
 FRESH_SECONDS = 600
+# Auto-resume is intentionally limited to one week: a longer reset is likely a
+# changed transcript format or a non-usage-limit message, so it must be ignored.
+MAX_RESET_DELAY = timedelta(days=7)
+SCAN_MTIME_SECONDS = 15 * 60
 _RESET_TIMESTAMP = re.compile(
     r"\breset(?:s)?\s+(?:at|on)?\s*"
     r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2}))",
@@ -127,26 +131,56 @@ def _session_id(value: object, fallback: str) -> str:
 
 
 def _load_records(path: str | Path) -> list[dict]:
+    """Read and parse only the final ``MAX_RECORDS`` JSONL records."""
     try:
-        lines = Path(path).read_text(encoding="utf-8", errors="strict").splitlines()
+        with Path(path).open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            position = stream.tell()
+            blocks: list[bytes] = []
+            newlines = 0
+            while position > 0 and newlines <= MAX_RECORDS:
+                size = min(8192, position)
+                position -= size
+                stream.seek(position)
+                block = stream.read(size)
+                blocks.append(block)
+                newlines += block.count(b"\n")
+        lines = b"".join(reversed(blocks)).splitlines()[-MAX_RECORDS:]
     except (OSError, UnicodeError) as error:
         raise TranscriptError(f"could not read transcript: {error}") from error
     records: list[dict] = []
     for line in lines[-MAX_RECORDS:]:
         try:
-            value = json.loads(line)
-        except json.JSONDecodeError as error:
-            raise TranscriptError(f"could not parse transcript record: {error.msg}") from error
+            value = json.loads(line.decode("utf-8", errors="strict"))
+        except (UnicodeError, json.JSONDecodeError) as error:
+            raise TranscriptError(f"could not parse transcript record: {error}") from error
         if isinstance(value, dict):
             records.append(value)
     return records
 
 
-def _latest_limit(records: list[dict]) -> dict | None:
-    for record in reversed(records):
+def _latest_limit(records: list[dict]) -> tuple[int | None, dict | None]:
+    for index in range(len(records) - 1, -1, -1):
+        record = records[index]
         if _has_limit_signal(record):
-            return record
-    return None
+            return index, record
+    return None, None
+
+
+def _has_progress_signal(value: object) -> bool:
+    """Recognize only explicit completion/progress records after a limit."""
+    if _has_limit_signal(value):
+        return False
+    strings: list[str] = []
+    _strings(value, strings)
+    text = " ".join(strings).lower()
+    return bool(
+        re.search(
+            r"\b(?:turn|task|request|response)[_ -]?(?:completed|complete|succeeded|success)\b"
+            r"|\b(?:completed|succeeded|assistant)\b",
+            text,
+        )
+    )
 
 
 def _marker_path(state: RuntimeState, session_id: str, reset_epoch: int) -> Path:
@@ -154,7 +188,7 @@ def _marker_path(state: RuntimeState, session_id: str, reset_epoch: int) -> Path
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     directory.chmod(0o700)
     session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
-    return directory / f"{session_hash}-{reset_epoch // 60}.scheduled"
+    return directory / f"{session_hash}-{reset_epoch}.scheduled"
 
 
 def _claim_marker(path: Path) -> bool:
@@ -189,7 +223,7 @@ def process(
         return False
     try:
         records = _load_records(path)
-        limit = _latest_limit(records)
+        limit_index, limit = _latest_limit(records)
         if limit is None:
             return False
         now = clock().astimezone(timezone.utc)
@@ -198,7 +232,14 @@ def process(
         if reset is None or event is None:
             return False
         reset = reset.astimezone(timezone.utc)
-        if event > now or reset <= now or now - event > timedelta(seconds=FRESH_SECONDS):
+        if (
+            event > now
+            or reset <= now
+            or now - event > timedelta(seconds=FRESH_SECONDS)
+            or reset - now > MAX_RESET_DELAY
+        ):
+            return False
+        if any(_has_progress_signal(record) for record in records[(limit_index or 0) + 1 :]):
             return False
         session_id = _session_id(limit, sid or Path(path).stem)
         reset_epoch = int(reset.timestamp())
@@ -225,17 +266,29 @@ def process(
             logger(f"could not schedule resume: {error}")
             return False
         return True
-    except (TranscriptError, OSError, TypeError, ValueError) as error:
+    except Exception as error:
         logger(f"could not parse transcript: {error}")
         return False
 
 
-def scan() -> None:
+def scan(
+    *,
+    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    scheduler: Callable[[list[str]], object] = _schedule,
+    logger: Callable[[str], object] = _log,
+) -> None:
+    try:
+        cutoff = clock().astimezone(timezone.utc).timestamp() - SCAN_MTIME_SECONDS
+    except Exception as error:
+        logger(f"could not establish scan cutoff: {error}")
+        return
     for filename in glob.glob(str(SESSIONS / "**" / "*.jsonl"), recursive=True):
         try:
-            process(filename)
+            if os.path.getmtime(filename) < cutoff:
+                continue
+            process(filename, clock=clock, scheduler=scheduler, logger=logger)
         except Exception as error:
-            _log(f"scan skipped {filename}: {error}")
+            logger(f"scan skipped {filename}: {error}")
 
 
 def main() -> int:
