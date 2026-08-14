@@ -43,9 +43,9 @@ def _approval_timeout() -> float:
         timeout = float(os.environ.get("CODEX_NOTIFY_APPROVAL_TIMEOUT", DEFAULT_TIMEOUT))
     except (TypeError, ValueError):
         return DEFAULT_TIMEOUT
-    if not math.isfinite(timeout):
+    if not math.isfinite(timeout) or timeout < 0:
         return DEFAULT_TIMEOUT
-    return max(0.0, timeout)
+    return timeout
 
 
 def _notification_text(event):

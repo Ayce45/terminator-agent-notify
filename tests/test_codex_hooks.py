@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from core.runtime_state import RuntimeState
+from adapters.codex.hooks import permission_request
 
 
 ROOT = Path(__file__).parents[1]
@@ -155,6 +156,23 @@ def _run_permission(environment, fixture="permission_bash.json", timeout=None):
     result = _run_hook("permission_request.py", _fixture(fixture), environment)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout) if result.stdout else None
+
+
+@pytest.mark.parametrize(
+    ("configured_value", "expected"),
+    [
+        ("0", 0.0),
+        ("-1", 300.0),
+        ("NaN", 300.0),
+        ("inf", 300.0),
+    ],
+)
+def test_approval_timeout_rejects_invalid_values_but_allows_zero(
+    monkeypatch, configured_value, expected
+):
+    monkeypatch.setenv("CODEX_NOTIFY_APPROVAL_TIMEOUT", configured_value)
+
+    assert permission_request._approval_timeout() == expected
 
 
 def _calls(path):
