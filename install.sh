@@ -18,10 +18,13 @@ XDG_STATE_HOME=${XDG_STATE_HOME:-"$HOME/.local/state"}
 INSTALL_ROOT="$XDG_DATA_HOME/terminator-agent-notify"
 STATE_DIR="$XDG_STATE_HOME/terminator-agent-notify"
 STATE_FILE="$STATE_DIR/installed-adapters"
+ENV_FILE="$STATE_DIR/environment"
+MANAGED_FILES="$STATE_DIR/managed-files.json"
 XWAYLAND_OWNED="$STATE_DIR/xwayland-owned"
 XWAYLAND_DESKTOP_SNAPSHOT="$STATE_DIR/xwayland-owned.desktop"
 TERMINATOR_ROOT="$XDG_CONFIG_HOME/terminator"
 SYSTEMD_USER="$XDG_CONFIG_HOME/systemd/user"
+UNIT_PREFIX="terminator-agent-notify"
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m  %s\n' "$*" >&2; }
@@ -31,31 +34,6 @@ selected() {
     [ "$agent" = "$wanted" ] && return 0
   done
   return 1
-}
-render_unit() {
-  python3 - "$1" "$2" "$INSTALL_ROOT" <<'PY'
-import os
-import sys
-import tempfile
-from pathlib import Path
-
-template, destination, install_root = map(Path, sys.argv[1:])
-escaped_root = str(install_root).replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
-rendered = template.read_text(encoding="utf-8").replace("@INSTALL_ROOT@", escaped_root)
-descriptor, temporary_name = tempfile.mkstemp(
-    prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
-)
-temporary = Path(temporary_name)
-try:
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        stream.write(rendered)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.chmod(temporary, 0o644)
-    os.replace(temporary, destination)
-finally:
-    temporary.unlink(missing_ok=True)
-PY
 }
 config_has_owned_hook() {
   local agent=$1 config
@@ -191,33 +169,21 @@ command -v notify-send >/dev/null 2>&1 || warn "notify-send not found; fallback 
 command -v python3 >/dev/null 2>&1 || { warn "python3 is required."; exit 1; }
 
 umask 077
-mkdir -p "$INSTALL_ROOT/adapters" "$INSTALL_ROOT/core" "$STATE_DIR"
+python3 "$SRC_DIR/scripts/manage-install-files.py" install \
+  --source "$SRC_DIR" --manifest "$MANAGED_FILES" \
+  --environment-file "$ENV_FILE" --terminator-root "$TERMINATOR_ROOT" \
+  --install-root "$INSTALL_ROOT" --systemd-user "$SYSTEMD_USER" \
+  --home "$HOME" "${agents[@]}"
+mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR"
-
-say "Installing shared Terminator plugin"
-mkdir -p "$TERMINATOR_ROOT/plugins" "$TERMINATOR_ROOT/core" "$TERMINATOR_ROOT/assets"
-install -m 0644 "$SRC_DIR/terminator-plugin/agent_notify.py" \
-  "$TERMINATOR_ROOT/plugins/agent_notify.py"
-install -m 0644 "$SRC_DIR/core/__init__.py" "$TERMINATOR_ROOT/core/__init__.py"
-install -m 0644 "$SRC_DIR/core/runtime_state.py" "$TERMINATOR_ROOT/core/runtime_state.py"
-for asset in "$SRC_DIR"/assets/*; do
-  [ -f "$asset" ] && install -m 0644 "$asset" "$TERMINATOR_ROOT/assets/"
-done
+python3 "$SRC_DIR/scripts/persist-environment.py" install \
+  --file "$ENV_FILE" "${agents[@]}"
 
 for agent in "${agents[@]}"; do
   say "Installing $agent adapter"
-  rm -rf "$INSTALL_ROOT/adapters/$agent"
-  mkdir -p "$INSTALL_ROOT/adapters/$agent"
-  cp -a "$SRC_DIR/adapters/$agent/." "$INSTALL_ROOT/adapters/$agent/"
 done
-install -m 0644 "$SRC_DIR/core/__init__.py" "$INSTALL_ROOT/core/__init__.py"
-install -m 0644 "$SRC_DIR/core/runtime_state.py" "$INSTALL_ROOT/core/runtime_state.py"
 
 if selected claude; then
-  mkdir -p "$HOME/.claude/assets"
-  for asset in "$SRC_DIR"/assets/*; do
-    [ -f "$asset" ] && install -m 0644 "$asset" "$HOME/.claude/assets/"
-  done
   python3 "$SRC_DIR/adapters/claude/configure.py" install \
     --config "$HOME/.claude/settings.json" --install-root "$INSTALL_ROOT"
 fi
@@ -226,30 +192,30 @@ if selected codex; then
     --config "$HOME/.codex/hooks.json" --install-root "$INSTALL_ROOT"
 fi
 
-mkdir -p "$SYSTEMD_USER"
-for agent in "${agents[@]}"; do
-  render_unit "$SRC_DIR/systemd/$agent-limit-poller.service.in" \
-    "$SYSTEMD_USER/$agent-limit-poller.service"
-  install -m 0644 "$SRC_DIR/systemd/$agent-limit-poller.timer" \
-    "$SYSTEMD_USER/$agent-limit-poller.timer"
-done
 if command -v systemctl >/dev/null 2>&1; then
   systemctl --user daemon-reload || warn "systemd user daemon reload failed."
   if selected claude; then
-    systemctl --user enable --now claude-limit-poller.timer || \
-      warn "Could not enable the Claude usage-limit timer."
+    systemctl --user stop "$UNIT_PREFIX-claude-autoresume-*" 2>/dev/null || true
+    if grep -qx 'CLAUDE_AUTORESUME=1' "$ENV_FILE"; then
+      systemctl --user enable --now "$UNIT_PREFIX-claude-limit-poller.timer" || \
+        warn "Could not enable the Claude usage-limit timer."
+    else
+      systemctl --user disable --now "$UNIT_PREFIX-claude-limit-poller.timer" 2>/dev/null || \
+        warn "Could not disable the Claude usage-limit timer."
+    fi
   fi
   if selected codex; then
+    systemctl --user stop "$UNIT_PREFIX-codex-autoresume-*" 2>/dev/null || true
     if [ ! -f "$INSTALL_ROOT/adapters/codex/autoresume.py" ]; then
-      systemctl --user disable --now codex-limit-poller.timer 2>/dev/null || true
+      systemctl --user disable --now "$UNIT_PREFIX-codex-limit-poller.timer" 2>/dev/null || true
       if [ "${CODEX_AUTORESUME:-0}" = 1 ]; then
         warn "Codex auto-resume adapter is unavailable; leaving its timer disabled."
       fi
-    elif [ "${CODEX_AUTORESUME:-0}" = 1 ]; then
-      systemctl --user enable --now codex-limit-poller.timer || \
+    elif grep -qx 'CODEX_AUTORESUME=1' "$ENV_FILE"; then
+      systemctl --user enable --now "$UNIT_PREFIX-codex-limit-poller.timer" || \
         warn "Could not enable the experimental Codex usage-limit timer."
     else
-      systemctl --user disable --now codex-limit-poller.timer 2>/dev/null || \
+      systemctl --user disable --now "$UNIT_PREFIX-codex-limit-poller.timer" 2>/dev/null || \
         warn "Could not disable the experimental Codex usage-limit timer."
     fi
   fi

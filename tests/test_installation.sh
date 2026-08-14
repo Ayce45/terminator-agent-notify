@@ -89,6 +89,18 @@ test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude/autoresume.py"
 test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex/hooks/stop.py"
 test "$(stat -c %a "$XDG_STATE_HOME/terminator-agent-notify")" = 700
 test "$(stat -c %a "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters")" = 600
+ENV_FILE="$XDG_STATE_HOME/terminator-agent-notify/environment"
+test -f "$ENV_FILE"
+test "$(stat -c %a "$ENV_FILE")" = 600
+grep -qx 'CLAUDE_AUTORESUME=1' "$ENV_FILE"
+grep -qx 'CODEX_AUTORESUME=0' "$ENV_FILE"
+grep -qx 'TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS=1' "$ENV_FILE"
+grep -qx 'TERMINATOR_AGENT_NOTIFY_EXPIRY_MS=0' "$ENV_FILE"
+grep -qx 'TERMINATOR_AGENT_NOTIFY_LOG_LEVEL=info' "$ENV_FILE"
+claude_generation_before=$(sed -n 's/^CLAUDE_AUTORESUME_GENERATION=//p' "$ENV_FILE")
+codex_generation_before=$(sed -n 's/^CODEX_AUTORESUME_GENERATION=//p' "$ENV_FILE")
+test "${#claude_generation_before}" -ge 32
+test "${#codex_generation_before}" -ge 32
 mkdir -p "$XDG_CONFIG_HOME/terminator/plugins/__pycache__"
 touch "$XDG_CONFIG_HOME/terminator/plugins/__pycache__/agent_notify.cpython-311.pyc"
 touch "$XDG_CONFIG_HOME/terminator/plugins/__pycache__/unrelated_plugin.cpython-311.pyc"
@@ -118,8 +130,23 @@ test "$(sha256sum "$HOME/.claude/settings.json")" = "$claude_before"
 test "$(sha256sum "$HOME/.codex/hooks.json")" = "$codex_before"
 test "$(find "$HOME" -type f -name '*.bak.*' | wc -l)" = "$backup_count_before"
 
-grep -q -- '--user enable --now claude-limit-poller.timer' "$SYSTEMCTL_LOG"
-if grep -q -- '--user enable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"; then
+test -f "$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-claude-limit-poller.service"
+test -f "$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-claude-limit-poller.timer"
+test -f "$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-codex-limit-poller.service"
+test -f "$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-codex-limit-poller.timer"
+test ! -e "$XDG_CONFIG_HOME/systemd/user/claude-limit-poller.service"
+test ! -e "$XDG_CONFIG_HOME/systemd/user/codex-limit-poller.service"
+grep -Fq "EnvironmentFile=\"$ENV_FILE\"" \
+  "$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-claude-limit-poller.service"
+grep -Fq "EnvironmentFile=\"$ENV_FILE\"" \
+  "$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-codex-limit-poller.service"
+if grep -q '^Environment=CODEX_AUTORESUME=1$' \
+    "$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-codex-limit-poller.service"; then
+  echo "Codex service bypasses persisted opt-out" >&2
+  exit 1
+fi
+grep -q -- '--user enable --now terminator-agent-notify-claude-limit-poller.timer' "$SYSTEMCTL_LOG"
+if grep -q -- '--user enable --now terminator-agent-notify-codex-limit-poller.timer' "$SYSTEMCTL_LOG"; then
   echo "Codex timer enabled without CODEX_AUTORESUME=1" >&2
   exit 1
 fi
@@ -131,11 +158,41 @@ test -f "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
 grep -qx claude "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
 
 : > "$SYSTEMCTL_LOG"
-CODEX_AUTORESUME=1 $ROOT/install.sh codex >/dev/null
-grep -q -- '--user enable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"
+CODEX_AUTORESUME=1 CODEX_AUTORESUME_MESSAGE='resume codex safely' \
+  $ROOT/install.sh codex >/dev/null
+grep -q -- '--user enable --now terminator-agent-notify-codex-limit-poller.timer' "$SYSTEMCTL_LOG"
+grep -q -- '--user stop terminator-agent-notify-codex-autoresume-\*' "$SYSTEMCTL_LOG"
+grep -qx 'CODEX_AUTORESUME=1' "$ENV_FILE"
+grep -qx "CODEX_AUTORESUME_MESSAGE='resume codex safely'" "$ENV_FILE"
+codex_generation_enabled=$(sed -n 's/^CODEX_AUTORESUME_GENERATION=//p' "$ENV_FILE")
+test "$codex_generation_enabled" != "$codex_generation_before"
 : > "$SYSTEMCTL_LOG"
 $ROOT/install.sh codex >/dev/null
-grep -q -- '--user disable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"
+grep -q -- '--user disable --now terminator-agent-notify-codex-limit-poller.timer' "$SYSTEMCTL_LOG"
+grep -qx 'CODEX_AUTORESUME=0' "$ENV_FILE"
+codex_generation_disabled=$(sed -n 's/^CODEX_AUTORESUME_GENERATION=//p' "$ENV_FILE")
+test "$codex_generation_disabled" != "$codex_generation_enabled"
+
+: > "$SYSTEMCTL_LOG"
+CLAUDE_AUTORESUME=0 TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS=0 \
+  TERMINATOR_AGENT_NOTIFY_EXPIRY_MS=5000 \
+  TERMINATOR_AGENT_NOTIFY_LOG_LEVEL=debug \
+  $ROOT/install.sh claude >/dev/null
+grep -q -- '--user disable --now terminator-agent-notify-claude-limit-poller.timer' "$SYSTEMCTL_LOG"
+grep -q -- '--user stop terminator-agent-notify-claude-autoresume-\*' "$SYSTEMCTL_LOG"
+grep -qx 'CLAUDE_AUTORESUME=0' "$ENV_FILE"
+grep -qx 'TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS=0' "$ENV_FILE"
+grep -qx 'TERMINATOR_AGENT_NOTIFY_EXPIRY_MS=5000' "$ENV_FILE"
+grep -qx 'TERMINATOR_AGENT_NOTIFY_LOG_LEVEL=debug' "$ENV_FILE"
+claude_generation_disabled=$(sed -n 's/^CLAUDE_AUTORESUME_GENERATION=//p' "$ENV_FILE")
+test "$claude_generation_disabled" != "$claude_generation_before"
+
+: > "$SYSTEMCTL_LOG"
+$ROOT/install.sh claude >/dev/null
+grep -q -- '--user enable --now terminator-agent-notify-claude-limit-poller.timer' "$SYSTEMCTL_LOG"
+grep -qx 'CLAUDE_AUTORESUME=1' "$ENV_FILE"
+claude_generation_reenabled=$(sed -n 's/^CLAUDE_AUTORESUME_GENERATION=//p' "$ENV_FILE")
+test "$claude_generation_reenabled" != "$claude_generation_disabled"
 $ROOT/uninstall.sh claude >/dev/null
 test ! -e "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude"
 test -d "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex"
@@ -173,7 +230,7 @@ printf '#!/usr/bin/env python3\n' > "$FUTURE_ROOT/adapters/codex/autoresume.py"
 chmod +x "$FUTURE_ROOT/adapters/codex/autoresume.py"
 : > "$SYSTEMCTL_LOG"
 CODEX_AUTORESUME=1 "$FUTURE_ROOT/install.sh" codex >/dev/null
-grep -q -- '--user enable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"
+grep -q -- '--user enable --now terminator-agent-notify-codex-limit-poller.timer' "$SYSTEMCTL_LOG"
 "$FUTURE_ROOT/uninstall.sh" codex >/dev/null
 
 # Unit rendering must preserve a hostile-but-valid XDG data path exactly under
@@ -185,7 +242,7 @@ export XDG_DATA_HOME="$TEST_ROOT/$SPECIAL_SUFFIX"
 export XDG_STATE_HOME="$TEST_ROOT/special state"
 mkdir -p "$HOME"
 "$ROOT/install.sh" claude >/dev/null
-python3 - "$XDG_CONFIG_HOME/systemd/user/claude-limit-poller.service" \
+python3 - "$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-claude-limit-poller.service" \
   "$TEST_ROOT" <<'PY'
 import sys
 
@@ -197,6 +254,8 @@ expected = (
 )
 lines = open(unit_path, encoding="utf-8").read().splitlines()
 assert expected in lines, (expected, lines)
+environment_file = f'{test_root}/special state/terminator-agent-notify/environment'
+assert f'EnvironmentFile="{environment_file}"' in lines, lines
 assert not list(__import__("pathlib").Path(unit_path).parent.glob(".*.tmp"))
 PY
 "$ROOT/uninstall.sh" claude >/dev/null
@@ -431,5 +490,59 @@ rm -rf "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude"
 test -f "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
 grep -qx claude "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
 "$ROOT/uninstall.sh" claude >/dev/null
+
+# Fixed-path collisions are rejected before hooks, adapters, or another fixed
+# file can be mutated.
+export HOME="$TEST_ROOT/fixed-collision/home"
+export XDG_CONFIG_HOME="$TEST_ROOT/fixed-collision/config"
+export XDG_DATA_HOME="$TEST_ROOT/fixed-collision/data"
+export XDG_STATE_HOME="$TEST_ROOT/fixed-collision/state"
+mkdir -p "$HOME/.claude" "$XDG_CONFIG_HOME/terminator/plugins"
+printf 'user-owned plugin\n' > "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
+collision_hash=$(sha256sum "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py")
+if "$ROOT/install.sh" claude >/dev/null 2>&1; then
+  echo "foreign plugin collision unexpectedly overwritten" >&2
+  exit 1
+fi
+test "$(sha256sum "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py")" = "$collision_hash"
+test ! -e "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude"
+if grep -q 'terminator-agent-notify:' "$HOME/.claude/settings.json" 2>/dev/null; then
+  echo "collision mutated Claude hooks" >&2
+  exit 1
+fi
+
+export HOME="$TEST_ROOT/unit-collision/home"
+export XDG_CONFIG_HOME="$TEST_ROOT/unit-collision/config"
+export XDG_DATA_HOME="$TEST_ROOT/unit-collision/data"
+export XDG_STATE_HOME="$TEST_ROOT/unit-collision/state"
+mkdir -p "$HOME" "$XDG_CONFIG_HOME/systemd/user"
+foreign_unit="$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-claude-limit-poller.timer"
+printf 'user-owned timer\n' > "$foreign_unit"
+unit_collision_hash=$(sha256sum "$foreign_unit")
+if "$ROOT/install.sh" claude >/dev/null 2>&1; then
+  echo "foreign systemd collision unexpectedly overwritten" >&2
+  exit 1
+fi
+test "$(sha256sum "$foreign_unit")" = "$unit_collision_hash"
+test ! -e "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
+
+# Uninstall removes a managed fixed file only while its bytes still match the
+# installation manifest. User edits are preserved.
+export HOME="$TEST_ROOT/edited-managed/home"
+export XDG_CONFIG_HOME="$TEST_ROOT/edited-managed/config"
+export XDG_DATA_HOME="$TEST_ROOT/edited-managed/data"
+export XDG_STATE_HOME="$TEST_ROOT/edited-managed/state"
+mkdir -p "$HOME"
+"$ROOT/install.sh" claude >/dev/null
+manifest="$XDG_STATE_HOME/terminator-agent-notify/managed-files.json"
+test -f "$manifest"
+test "$(stat -c %a "$manifest")" = 600
+printf '# user plugin edit\n' >> "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
+printf '# user unit edit\n' >> \
+  "$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-claude-limit-poller.service"
+"$ROOT/uninstall.sh" claude >/dev/null
+grep -qx '# user plugin edit' "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
+grep -qx '# user unit edit' \
+  "$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-claude-limit-poller.service"
 
 echo "installation integration checks passed"
