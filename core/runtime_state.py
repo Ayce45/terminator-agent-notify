@@ -84,7 +84,11 @@ class RuntimeState:
         except FileNotFoundError:
             return None
         try:
-            return claimed.read_text(encoding="utf-8")
+            try:
+                decision = claimed.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                return None
+            return decision if decision in _DECISIONS else None
         finally:
             try:
                 claimed.unlink()
@@ -116,4 +120,3 @@ class RuntimeState:
             except FileNotFoundError:
                 pass
             raise
-

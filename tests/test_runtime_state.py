@@ -19,6 +19,13 @@ def test_decision_is_consumed_once(tmp_path):
     assert state.consume_decision("codex", "s1", "r1") is None
 
 
+def test_invalid_decision_is_consumed_without_escaping_domain(tmp_path):
+    state = RuntimeState(tmp_path)
+    state.decision_path("codex", "s1", "r1").write_text("maybe", encoding="utf-8")
+    assert state.consume_decision("codex", "s1", "r1") is None
+    assert state.consume_decision("codex", "s1", "r1") is None
+
+
 def test_paths_hash_identifiers_and_state_is_private(tmp_path):
     state = RuntimeState(tmp_path)
     pane = state.pane_path("claude", "session/with spaces")
@@ -54,4 +61,3 @@ def test_default_root_uses_xdg_runtime_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     state = RuntimeState()
     assert state.root == tmp_path / "terminator-agent-notify"
-

@@ -20,3 +20,13 @@ The bare `pytest tests/test_runtime_state.py -v` launcher in this environment do
 
 No functional concerns. The runtime state root is chmod-ed to 0700 when initialized and state directories are likewise enforced; callers should still avoid placing unrelated files under an explicitly supplied root.
 
+## Round 1/5 fixes
+
+- Added `pytest.ini` with `pythonpath = .`, so the exact required `pytest tests/test_runtime_state.py -v` command works with the repository's pytest launcher.
+- `consume_decision` now validates claimed contents against exactly `allow` and `deny`; invalid UTF-8 or other invalid content is consumed and returns `None`.
+- Added a regression test covering invalid decision content and confirming it is single-use/removes the state.
+
+Verification after fixes:
+
+- `pytest tests/test_runtime_state.py -v`: 6 passed.
+- `pytest -v`: 7 passed.
