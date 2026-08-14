@@ -1,0 +1,6 @@
+[Unit]
+Description=Scan Claude Code transcripts for usage-limit resets
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env python3 "@INSTALL_ROOT@/adapters/claude/autoresume.py" --scan
