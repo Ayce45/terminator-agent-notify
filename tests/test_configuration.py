@@ -143,3 +143,20 @@ def test_invalid_json_is_not_replaced_or_backed_up(tmp_path):
 
     assert config_path.read_bytes() == original
     assert list(tmp_path.glob("settings.json.bak.*")) == []
+
+
+@pytest.mark.parametrize(
+    ("agent", "filename"),
+    [("claude", "settings.json"), ("codex", "hooks.json")],
+)
+def test_uninstall_without_owned_hooks_is_byte_noop(tmp_path, agent, filename):
+    """Reserializing an unrelated-only config during uninstall breaks this test."""
+    configure = load_configurator(agent)
+    config_path = tmp_path / filename
+    original = b'{ "hooks": {"Stop": []}, "user": true }\n'
+    config_path.write_bytes(original)
+
+    assert configure.uninstall(config_path) is False
+
+    assert config_path.read_bytes() == original
+    assert list(tmp_path.glob(f"{filename}.bak.*")) == []

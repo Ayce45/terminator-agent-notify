@@ -94,7 +94,44 @@ do_undo() {
   say "Done."
 }
 
+do_undo_owned() {
+  local ownership_file=$1 desktop_snapshot=$2 path original current
+  local failed=0
+  while IFS= read -r -d '' path && IFS= read -r -d '' original; do
+    if ! current=$(kb_command "$path"); then
+      warn "Could not read owned shortcut $path"
+      failed=1
+      continue
+    fi
+    if [ "$current" = "${PREFIX}${original}" ]; then
+      if kb_set "$path" "$original"; then
+        say "Reverted owned shortcut $path"
+      else
+        warn "Could not revert owned shortcut $path"
+        failed=1
+      fi
+    fi
+  done < "$ownership_file"
+
+  if [ -f "$USER_DESKTOP" ] && [ -f "$desktop_snapshot" ] && \
+      cmp -s "$USER_DESKTOP" "$desktop_snapshot"; then
+    rm -f "$USER_DESKTOP"
+    say "Removed .desktop override: $USER_DESKTOP"
+  elif [ -f "$USER_DESKTOP" ] && grep -qF "$MARKER" "$USER_DESKTOP"; then
+    warn "Owned desktop override was modified; leaving it unchanged."
+  fi
+  say "Done."
+  return "$failed"
+}
+
 case "${1:-}" in
+  --undo-owned)
+    [ "$#" -eq 3 ] && [ -f "$2" ] || {
+      warn "Usage: $0 --undo-owned OWNERSHIP_FILE DESKTOP_SNAPSHOT"
+      exit 2
+    }
+    do_undo_owned "$2" "$3"
+    ;;
   --undo) do_undo ;;
   *)      do_install ;;
 esac

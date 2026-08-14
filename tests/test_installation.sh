@@ -19,6 +19,48 @@ cat > "$TEST_ROOT/bin/systemctl" <<'EOF'
 printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
 EOF
 chmod +x "$TEST_ROOT/bin/systemctl"
+cat > "$TEST_ROOT/bin/gsettings" <<'EOF'
+#!/bin/sh
+if [ "${GSETTINGS_FAIL_GET:-0}" = 1 ] && [ "${1:-}" = get ] && \
+    [ "${3:-}" = command ]; then
+  exit 1
+fi
+if [ "${1:-}" = get ] && [ "${3:-}" = custom-keybindings ]; then
+  case "${GSETTINGS_TEST_MODE:-}" in
+    unrelated-x11|existing-terminator-x11)
+      printf "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/']\n"
+      ;;
+    owned-shortcut)
+      if [ -f "$GSETTINGS_DB/custom1" ]; then
+        printf "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom1/']\n"
+      else
+        printf "['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/']\n"
+      fi
+      ;;
+    *) printf '@as []\n' ;;
+  esac
+elif [ "${1:-}" = get ] && [ "${3:-}" = command ]; then
+  case "${GSETTINGS_TEST_MODE:-}" in
+    unrelated-x11) printf "'env GDK_BACKEND=x11 firefox'\n" ;;
+    existing-terminator-x11)
+      printf "'env GDK_BACKEND=x11 terminator --profile work'\n"
+      ;;
+    owned-shortcut)
+      case "$2" in
+        *custom0/) printf "'%s'\n" "$(cat "$GSETTINGS_DB/custom0")" ;;
+        *custom1/) printf "'%s'\n" "$(cat "$GSETTINGS_DB/custom1")" ;;
+      esac
+      ;;
+  esac
+elif [ "${1:-}" = set ] && [ "${3:-}" = command ] && \
+    [ "${GSETTINGS_TEST_MODE:-}" = owned-shortcut ]; then
+  case "$2" in
+    *custom0/) printf '%s\n' "$4" > "$GSETTINGS_DB/custom0" ;;
+    *custom1/) printf '%s\n' "$4" > "$GSETTINGS_DB/custom1" ;;
+  esac
+fi
+EOF
+chmod +x "$TEST_ROOT/bin/gsettings"
 export PATH="$TEST_ROOT/bin:$PATH"
 
 cat > "$HOME/.claude/settings.json" <<'EOF'
@@ -47,6 +89,13 @@ test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude/autoresume.py"
 test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex/hooks/stop.py"
 test "$(stat -c %a "$XDG_STATE_HOME/terminator-agent-notify")" = 700
 test "$(stat -c %a "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters")" = 600
+mkdir -p "$XDG_CONFIG_HOME/terminator/plugins/__pycache__"
+touch "$XDG_CONFIG_HOME/terminator/plugins/__pycache__/agent_notify.cpython-311.pyc"
+touch "$XDG_CONFIG_HOME/terminator/plugins/__pycache__/unrelated_plugin.cpython-311.pyc"
+mkdir -p "$XDG_CONFIG_HOME/terminator/core/__pycache__"
+touch "$XDG_CONFIG_HOME/terminator/core/__pycache__/__init__.cpython-311.pyc"
+touch "$XDG_CONFIG_HOME/terminator/core/__pycache__/runtime_state.cpython-311.pyc"
+touch "$XDG_CONFIG_HOME/terminator/core/__pycache__/unrelated_core.cpython-311.pyc"
 
 python3 - "$HOME/.claude/settings.json" "$HOME/.codex/hooks.json" <<'PY'
 import json
@@ -74,6 +123,7 @@ if grep -q -- '--user enable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"; t
   echo "Codex timer enabled without CODEX_AUTORESUME=1" >&2
   exit 1
 fi
+grep -q -- '--user disable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"
 
 $ROOT/uninstall.sh codex >/dev/null
 test -d "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude"
@@ -81,8 +131,17 @@ test ! -e "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex"
 test -f "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
 grep -qx claude "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
 
-CODEX_AUTORESUME=1 $ROOT/install.sh codex >/dev/null
-grep -q -- '--user enable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"
+: > "$SYSTEMCTL_LOG"
+codex_output=$(CODEX_AUTORESUME=1 $ROOT/install.sh codex 2>&1)
+case "$codex_output" in
+  *"Codex auto-resume adapter is unavailable"*) ;;
+  *) echo "missing warning for unavailable Codex auto-resume adapter" >&2; exit 1 ;;
+esac
+if grep -q -- '--user enable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"; then
+  echo "Codex timer enabled without an installed auto-resume adapter" >&2
+  exit 1
+fi
+grep -q -- '--user disable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"
 $ROOT/uninstall.sh claude >/dev/null
 test ! -e "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude"
 test -d "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex"
@@ -93,6 +152,11 @@ $ROOT/uninstall.sh codex >/dev/null
 test ! -e "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
 test ! -e "$XDG_CONFIG_HOME/terminator/core/runtime_state.py"
 test ! -e "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
+test ! -e "$XDG_CONFIG_HOME/terminator/plugins/__pycache__/agent_notify.cpython-311.pyc"
+test -e "$XDG_CONFIG_HOME/terminator/plugins/__pycache__/unrelated_plugin.cpython-311.pyc"
+test ! -e "$XDG_CONFIG_HOME/terminator/core/__pycache__/__init__.cpython-311.pyc"
+test ! -e "$XDG_CONFIG_HOME/terminator/core/__pycache__/runtime_state.cpython-311.pyc"
+test -e "$XDG_CONFIG_HOME/terminator/core/__pycache__/unrelated_core.cpython-311.pyc"
 
 python3 - "$HOME/.claude/settings.json" "$HOME/.codex/hooks.json" <<'PY'
 import json
@@ -106,5 +170,272 @@ for path, expected in zip(sys.argv[1:], ("claude", "codex")):
         for item in items
     )
 PY
+
+# Task 7 can add the adapter without changing the installer: when its file is
+# present in a source checkout, CODEX_AUTORESUME=1 enables the timer normally.
+FUTURE_ROOT="$TEST_ROOT/future-source"
+cp -a "$ROOT" "$FUTURE_ROOT"
+printf '#!/usr/bin/env python3\n' > "$FUTURE_ROOT/adapters/codex/autoresume.py"
+chmod +x "$FUTURE_ROOT/adapters/codex/autoresume.py"
+: > "$SYSTEMCTL_LOG"
+CODEX_AUTORESUME=1 "$FUTURE_ROOT/install.sh" codex >/dev/null
+grep -q -- '--user enable --now codex-limit-poller.timer' "$SYSTEMCTL_LOG"
+"$FUTURE_ROOT/uninstall.sh" codex >/dev/null
+
+# Unit rendering must preserve a hostile-but-valid XDG data path exactly under
+# systemd's command-line quoting/specifier rules.
+export HOME="$TEST_ROOT/special home"
+export XDG_CONFIG_HOME="$TEST_ROOT/special config"
+SPECIAL_SUFFIX='data &|\quote"% space'
+export XDG_DATA_HOME="$TEST_ROOT/$SPECIAL_SUFFIX"
+export XDG_STATE_HOME="$TEST_ROOT/special state"
+mkdir -p "$HOME"
+"$ROOT/install.sh" claude >/dev/null
+python3 - "$XDG_CONFIG_HOME/systemd/user/claude-limit-poller.service" \
+  "$TEST_ROOT" <<'PY'
+import sys
+
+unit_path, test_root = sys.argv[1:]
+install_root = f'{test_root}/data &|\\\\quote\\"%% space/terminator-agent-notify'
+expected = (
+    'ExecStart=/usr/bin/env python3 '
+    f'"{install_root}/adapters/claude/autoresume.py" --scan'
+)
+lines = open(unit_path, encoding="utf-8").read().splitlines()
+assert expected in lines, (expected, lines)
+assert not list(__import__("pathlib").Path(unit_path).parent.glob(".*.tmp"))
+PY
+"$ROOT/uninstall.sh" claude >/dev/null
+
+# Pre-existing user XWayland setup is not project-owned and must survive both
+# install and final uninstall byte-for-byte.
+export HOME="$TEST_ROOT/preexisting-xwayland/home"
+export XDG_CONFIG_HOME="$TEST_ROOT/preexisting-xwayland/config"
+export XDG_DATA_HOME="$TEST_ROOT/preexisting-xwayland/data"
+export XDG_STATE_HOME="$TEST_ROOT/preexisting-xwayland/state"
+export XDG_SESSION_TYPE=wayland
+mkdir -p "$HOME/.local/share/applications"
+cat > "$HOME/.local/share/applications/terminator.desktop" <<'EOF'
+[Desktop Entry]
+Name=User Terminator
+Exec=env GDK_BACKEND=x11 terminator --user-option
+EOF
+preexisting_hash=$(sha256sum "$HOME/.local/share/applications/terminator.desktop")
+FORCE_XWAYLAND=1 "$ROOT/install.sh" claude >/dev/null
+test ! -e "$XDG_STATE_HOME/terminator-agent-notify/xwayland-owned"
+test "$(sha256sum "$HOME/.local/share/applications/terminator.desktop")" = "$preexisting_hash"
+"$ROOT/uninstall.sh" claude >/dev/null
+test "$(sha256sum "$HOME/.local/share/applications/terminator.desktop")" = "$preexisting_hash"
+
+# A custom desktop override that does not yet request X11 is still user-owned;
+# installation must not overwrite it in order to make XWayland reversible.
+export HOME="$TEST_ROOT/custom-desktop/home"
+export XDG_CONFIG_HOME="$TEST_ROOT/custom-desktop/config"
+export XDG_DATA_HOME="$TEST_ROOT/custom-desktop/data"
+export XDG_STATE_HOME="$TEST_ROOT/custom-desktop/state"
+mkdir -p "$HOME/.local/share/applications"
+cat > "$HOME/.local/share/applications/terminator.desktop" <<'EOF'
+[Desktop Entry]
+Name=Custom Terminator
+Exec=terminator --profile work
+EOF
+custom_desktop_hash=$(sha256sum "$HOME/.local/share/applications/terminator.desktop")
+FORCE_XWAYLAND=1 "$ROOT/install.sh" claude >/dev/null
+test ! -e "$XDG_STATE_HOME/terminator-agent-notify/xwayland-owned"
+test "$(sha256sum "$HOME/.local/share/applications/terminator.desktop")" = \
+  "$custom_desktop_hash"
+"$ROOT/uninstall.sh" claude >/dev/null
+test "$(sha256sum "$HOME/.local/share/applications/terminator.desktop")" = \
+  "$custom_desktop_hash"
+
+# Existing Terminator X11 shortcuts may include arguments and remain user-owned.
+export HOME="$TEST_ROOT/existing-shortcut/home"
+export XDG_CONFIG_HOME="$TEST_ROOT/existing-shortcut/config"
+export XDG_DATA_HOME="$TEST_ROOT/existing-shortcut/data"
+export XDG_STATE_HOME="$TEST_ROOT/existing-shortcut/state"
+mkdir -p "$HOME"
+GSETTINGS_TEST_MODE=existing-terminator-x11 FORCE_XWAYLAND=1 \
+  "$ROOT/install.sh" claude >/dev/null
+test ! -e "$XDG_STATE_HOME/terminator-agent-notify/xwayland-owned"
+"$ROOT/uninstall.sh" claude >/dev/null
+
+# An unrelated X11 application shortcut is not evidence that Terminator is
+# already configured; the helper must still run and the project must own it.
+export HOME="$TEST_ROOT/unrelated-x11/home"
+export XDG_CONFIG_HOME="$TEST_ROOT/unrelated-x11/config"
+export XDG_DATA_HOME="$TEST_ROOT/unrelated-x11/data"
+export XDG_STATE_HOME="$TEST_ROOT/unrelated-x11/state"
+mkdir -p "$HOME"
+GSETTINGS_TEST_MODE=unrelated-x11 FORCE_XWAYLAND=1 \
+  "$ROOT/install.sh" claude >/dev/null
+test -f "$XDG_STATE_HOME/terminator-agent-notify/xwayland-owned"
+"$ROOT/uninstall.sh" claude >/dev/null
+
+# When this project applies the helper, it records ownership and undoes only
+# that owned setup after the last adapter is removed.
+export HOME="$TEST_ROOT/owned-xwayland/home"
+export XDG_CONFIG_HOME="$TEST_ROOT/owned-xwayland/config"
+export XDG_DATA_HOME="$TEST_ROOT/owned-xwayland/data"
+export XDG_STATE_HOME="$TEST_ROOT/owned-xwayland/state"
+mkdir -p "$HOME"
+FORCE_XWAYLAND=1 "$ROOT/install.sh" claude >/dev/null
+test -f "$XDG_STATE_HOME/terminator-agent-notify/xwayland-owned"
+test -f "$HOME/.local/share/applications/terminator.desktop"
+"$ROOT/uninstall.sh" claude >/dev/null
+test ! -e "$HOME/.local/share/applications/terminator.desktop"
+test ! -e "$XDG_STATE_HOME/terminator-agent-notify/xwayland-owned"
+
+# If the user edits the generated desktop while it is installed, the marker is
+# not enough to prove ownership of the new bytes; preserve the edited override.
+export HOME="$TEST_ROOT/edited-owned-desktop/home"
+export XDG_CONFIG_HOME="$TEST_ROOT/edited-owned-desktop/config"
+export XDG_DATA_HOME="$TEST_ROOT/edited-owned-desktop/data"
+export XDG_STATE_HOME="$TEST_ROOT/edited-owned-desktop/state"
+mkdir -p "$HOME"
+FORCE_XWAYLAND=1 "$ROOT/install.sh" claude >/dev/null
+printf '# user edit\n' >> "$HOME/.local/share/applications/terminator.desktop"
+"$ROOT/uninstall.sh" claude >/dev/null
+grep -qx '# user edit' "$HOME/.local/share/applications/terminator.desktop"
+test ! -e "$XDG_STATE_HOME/terminator-agent-notify/xwayland-owned"
+
+# Record exact keyboard shortcuts changed by the helper. A new user-owned X11
+# shortcut created later must retain its prefix when project changes are undone.
+export HOME="$TEST_ROOT/owned-shortcut/home"
+export XDG_CONFIG_HOME="$TEST_ROOT/owned-shortcut/config"
+export XDG_DATA_HOME="$TEST_ROOT/owned-shortcut/data"
+export XDG_STATE_HOME="$TEST_ROOT/owned-shortcut/state"
+export GSETTINGS_TEST_MODE=owned-shortcut
+export GSETTINGS_DB="$TEST_ROOT/owned-shortcut/gsettings"
+mkdir -p "$HOME" "$GSETTINGS_DB"
+printf 'terminator\n' > "$GSETTINGS_DB/custom0"
+FORCE_XWAYLAND=1 "$ROOT/install.sh" claude >/dev/null
+test "$(cat "$GSETTINGS_DB/custom0")" = 'env GDK_BACKEND=x11 terminator'
+printf 'terminator\n' > "$GSETTINGS_DB/custom1"
+FORCE_XWAYLAND=1 "$ROOT/install.sh" claude >/dev/null
+test "$(cat "$GSETTINGS_DB/custom1")" = terminator
+printf 'env GDK_BACKEND=x11 terminator\n' > "$GSETTINGS_DB/custom1"
+"$ROOT/uninstall.sh" claude >/dev/null
+test "$(cat "$GSETTINGS_DB/custom0")" = terminator
+test "$(cat "$GSETTINGS_DB/custom1")" = 'env GDK_BACKEND=x11 terminator'
+unset GSETTINGS_TEST_MODE GSETTINGS_DB
+
+# A transient settings read failure must retain the exact ownership ledger so
+# a later uninstall can retry restoring the project-mutated shortcut.
+export HOME="$TEST_ROOT/owned-retry/home"
+export XDG_CONFIG_HOME="$TEST_ROOT/owned-retry/config"
+export XDG_DATA_HOME="$TEST_ROOT/owned-retry/data"
+export XDG_STATE_HOME="$TEST_ROOT/owned-retry/state"
+export GSETTINGS_TEST_MODE=owned-shortcut
+export GSETTINGS_DB="$TEST_ROOT/owned-retry/gsettings"
+mkdir -p "$HOME" "$GSETTINGS_DB"
+printf 'terminator\n' > "$GSETTINGS_DB/custom0"
+FORCE_XWAYLAND=1 "$ROOT/install.sh" claude >/dev/null
+export GSETTINGS_FAIL_GET=1
+"$ROOT/uninstall.sh" claude >/dev/null
+test -f "$XDG_STATE_HOME/terminator-agent-notify/xwayland-owned"
+test "$(cat "$GSETTINGS_DB/custom0")" = 'env GDK_BACKEND=x11 terminator'
+unset GSETTINGS_FAIL_GET
+"$ROOT/uninstall.sh" claude >/dev/null
+test ! -e "$XDG_STATE_HOME/terminator-agent-notify/xwayland-owned"
+test "$(cat "$GSETTINGS_DB/custom0")" = terminator
+unset GSETTINGS_TEST_MODE GSETTINGS_DB
+export XDG_SESSION_TYPE=x11
+
+# Missing state must not let selective uninstall remove shared files while the
+# other adapter still has installed files/hooks.
+export HOME="$TEST_ROOT/missing-state/home"
+export XDG_CONFIG_HOME="$TEST_ROOT/missing-state/config"
+export XDG_DATA_HOME="$TEST_ROOT/missing-state/data"
+export XDG_STATE_HOME="$TEST_ROOT/missing-state/state"
+mkdir -p "$HOME"
+"$ROOT/install.sh" both >/dev/null
+rm "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
+touch "$XDG_STATE_HOME/terminator-agent-notify/.installed-adapters.interrupted"
+"$ROOT/uninstall.sh" codex >/dev/null
+test -f "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
+grep -qx claude "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
+test ! -e "$XDG_STATE_HOME/terminator-agent-notify/.installed-adapters.interrupted"
+"$ROOT/uninstall.sh" claude >/dev/null
+
+# A truncated state file must be repaired from the adapter that still exists.
+export HOME="$TEST_ROOT/truncated-state/home"
+export XDG_CONFIG_HOME="$TEST_ROOT/truncated-state/config"
+export XDG_DATA_HOME="$TEST_ROOT/truncated-state/data"
+export XDG_STATE_HOME="$TEST_ROOT/truncated-state/state"
+mkdir -p "$HOME"
+"$ROOT/install.sh" both >/dev/null
+printf 'cla' > "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
+truncated_output=$("$ROOT/uninstall.sh" claude 2>&1)
+case "$truncated_output" in
+  *"Ignoring invalid installed-adapters state: cla"*) ;;
+  *) echo "truncated state was not reported" >&2; exit 1 ;;
+esac
+test -f "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
+grep -qx codex "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
+"$ROOT/uninstall.sh" codex >/dev/null
+
+# Corrupt state without any installed-directory or owned-hook evidence must not
+# retain shared files forever. Invalid values are reported and discarded.
+export HOME="$TEST_ROOT/corrupt-state/home"
+export XDG_CONFIG_HOME="$TEST_ROOT/corrupt-state/config"
+export XDG_DATA_HOME="$TEST_ROOT/corrupt-state/data"
+export XDG_STATE_HOME="$TEST_ROOT/corrupt-state/state"
+mkdir -p "$HOME"
+"$ROOT/install.sh" claude >/dev/null
+python3 "$ROOT/adapters/claude/configure.py" uninstall \
+  --config "$HOME/.claude/settings.json"
+rm -rf "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude"
+printf 'claude\nnot-an-agent\n' \
+  > "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
+corrupt_output=$("$ROOT/uninstall.sh" codex 2>&1)
+case "$corrupt_output" in
+  *"Ignoring invalid installed-adapters state"*) ;;
+  *) echo "corrupt state was not reported" >&2; exit 1 ;;
+esac
+test ! -e "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
+test ! -e "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
+
+# An interrupted install can leave only an owned hook. That hook is sufficient
+# evidence to preserve shared files until its own adapter is uninstalled.
+export HOME="$TEST_ROOT/hook-only/home"
+export XDG_CONFIG_HOME="$TEST_ROOT/hook-only/config"
+export XDG_DATA_HOME="$TEST_ROOT/hook-only/data"
+export XDG_STATE_HOME="$TEST_ROOT/hook-only/state"
+mkdir -p "$HOME"
+"$ROOT/install.sh" claude >/dev/null
+rm "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
+rm -rf "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude"
+"$ROOT/uninstall.sh" codex >/dev/null
+test -f "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
+grep -qx claude "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
+"$ROOT/uninstall.sh" claude >/dev/null
+
+# Ownership predates agent-specific descriptions; a legacy base-marker hook in
+# an agent's config remains evidence that the corresponding adapter is active.
+export HOME="$TEST_ROOT/legacy-hook/home"
+export XDG_CONFIG_HOME="$TEST_ROOT/legacy-hook/config"
+export XDG_DATA_HOME="$TEST_ROOT/legacy-hook/data"
+export XDG_STATE_HOME="$TEST_ROOT/legacy-hook/state"
+mkdir -p "$HOME"
+"$ROOT/install.sh" claude >/dev/null
+python3 - "$HOME/.claude/settings.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+value = json.load(open(path, encoding="utf-8"))
+for entries in value["hooks"].values():
+    for entry in entries:
+        if entry.get("description", "").startswith("terminator-agent-notify:"):
+            entry["description"] = "terminator-agent-notify:legacy"
+with open(path, "w", encoding="utf-8") as stream:
+    json.dump(value, stream)
+PY
+rm "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
+rm -rf "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude"
+"$ROOT/uninstall.sh" codex >/dev/null
+test -f "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
+grep -qx claude "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
+"$ROOT/uninstall.sh" claude >/dev/null
 
 echo "installation integration checks passed"

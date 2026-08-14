@@ -95,6 +95,14 @@ def _without_owned(config: dict) -> dict:
     return config
 
 
+def _has_owned(config: dict) -> bool:
+    return any(
+        _owned(entry)
+        for entries in config.get("hooks", {}).values()
+        for entry in entries
+    )
+
+
 def install(config_path: Path, install_root: Path) -> bool:
     config = _without_owned(_read(config_path))
     hook_dir = install_root / "adapters" / "codex" / "hooks"
@@ -119,7 +127,10 @@ def install(config_path: Path, install_root: Path) -> bool:
 def uninstall(config_path: Path) -> bool:
     if not config_path.exists():
         return False
-    return _write_changed(config_path, _without_owned(_read(config_path)))
+    config = _read(config_path)
+    if not _has_owned(config):
+        return False
+    return _write_changed(config_path, _without_owned(config))
 
 
 def main() -> int:
