@@ -23,6 +23,32 @@ class FakeNotifications:
         self.closed.append(int(notification_id))
 
 
+class FakeSignalMatch:
+    def __init__(self):
+        self.removed = False
+
+    def remove(self):
+        self.removed = True
+
+
+class FakeBus:
+    def __init__(self, notifications=None):
+        self.notifications = notifications or FakeNotifications()
+        self.owner = ":1.notification-daemon"
+        self.signal_receivers = []
+
+    def get_object(self, _bus_name, _path):
+        return self.notifications
+
+    def get_name_owner(self, _bus_name):
+        return self.owner
+
+    def add_signal_receiver(self, callback, **kwargs):
+        match = FakeSignalMatch()
+        self.signal_receivers.append((callback, kwargs, match))
+        return match
+
+
 def _install_modules():
     dbus = types.ModuleType("dbus")
     dbus.UInt32 = int
@@ -89,3 +115,12 @@ def make_service(root):
     service.focused = []
     service._focus = lambda pane_uuid: service.focused.append(str(pane_uuid)) or True
     return service, notifications, state
+
+
+def make_plugin(root):
+    module = _load_plugin()
+    bus = FakeBus()
+    module.dbus.SessionBus = lambda: bus
+    module.RuntimeState = lambda: RuntimeState(root)
+    plugin = module.AgentNotify()
+    return plugin, bus

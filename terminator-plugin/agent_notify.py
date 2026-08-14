@@ -115,6 +115,8 @@ class FocusService(dbus.service.Object):
         self._notif_meta = {}
         # (agent, session id) -> set(notification id)
         self._session_notifs = {}
+        # (agent, session id, request id) -> set(notification id)
+        self._request_notifs = {}
 
     @dbus.service.method(BUS_NAME, in_signature="s", out_signature="b")
     def FocusTerminal(self, uuid):
@@ -236,6 +238,9 @@ class FocusService(dbus.service.Object):
             kind,
         )
         self._session_notifs.setdefault((agent, session_id), set()).add(notification_id)
+        self._request_notifs.setdefault((agent, session_id, request_id), set()).add(
+            notification_id
+        )
 
     def _untrack(self, notification_id):
         metadata = self._notif_meta.pop(notification_id, None)
@@ -246,6 +251,11 @@ class FocusService(dbus.service.Object):
             notification_ids.discard(notification_id)
             if not notification_ids:
                 self._session_notifs.pop((metadata[0], metadata[1]), None)
+        request_ids = self._request_notifs.get((metadata[0], metadata[1], metadata[2]))
+        if request_ids is not None:
+            request_ids.discard(notification_id)
+            if not request_ids:
+                self._request_notifs.pop((metadata[0], metadata[1], metadata[2]), None)
 
     @dbus.service.method(BUS_NAME, in_signature="ssssss", out_signature="u")
     def Notify(self, agent, session_id, request_id, pane_uuid, kind, payload_json):
@@ -270,6 +280,10 @@ class FocusService(dbus.service.Object):
             kind = str(kind)
             if agent not in {"claude", "codex"}:
                 raise ValueError("unsupported agent")
+            if agent == "codex" and kind == "permission" and (
+                not session_id or not request_id
+            ):
+                raise ValueError("Codex permission requires session and request ids")
         except (TypeError, ValueError, json.JSONDecodeError) as exception:
             _log("Notify: invalid request: %s" % exception)
             return 0
@@ -312,6 +326,19 @@ class FocusService(dbus.service.Object):
         _log("dismiss agent=%s sid=%s closed=%d" % (key[0], key[1], len(notification_ids)))
         return True
 
+    @dbus.service.method(BUS_NAME, in_signature="sss", out_signature="b")
+    def DismissRequest(self, agent, session_id, request_id):
+        """Retire exactly one request without affecting concurrent prompts."""
+        key = (str(agent), str(session_id), str(request_id))
+        notification_ids = list(self._request_notifs.get(key, set()))
+        for notification_id in notification_ids:
+            self._close_and_untrack(notification_id)
+        _log(
+            "dismiss request agent=%s sid=%s request=%s closed=%d"
+            % (key[0], key[1], key[2], len(notification_ids))
+        )
+        return True
+
     def _close_and_untrack(self, notification_id):
         try:
             self._notifs.CloseNotification(dbus.UInt32(notification_id))
@@ -320,11 +347,17 @@ class FocusService(dbus.service.Object):
         self._untrack(notification_id)
 
     def dismiss_pane(self, pane_uuid):
+        """Clear informational notices on focus, never pending approvals.
+
+        Pane focus has no request identity, so it can span sessions.  The safe
+        invariant is to close only non-permission notifications here; callers
+        with a request identity must use :meth:`DismissRequest` instead.
+        """
         target = _normalize(pane_uuid)
         notification_ids = [
             notification_id
             for notification_id, metadata in self._notif_meta.items()
-            if _normalize(metadata[3]) == target
+            if _normalize(metadata[3]) == target and metadata[4] != "permission"
         ]
         for notification_id in notification_ids:
             self._close_and_untrack(notification_id)
@@ -368,6 +401,8 @@ class AgentNotify(Plugin):
         self.service = None
         self._focus_handlers = {}
         self._reconcile_id = None
+        self._notification_signal_matches = []
+        self._notification_bus = None
         bus = self._session_bus()
         notifications = self._notifications_interface(bus)
         if bus is not None:
@@ -379,20 +414,28 @@ class AgentNotify(Plugin):
                 err("AgentNotify plugin failed to register: %s" % exception)
         if bus is not None and self.service is not None:
             try:
-                bus.add_signal_receiver(
-                    self.service.on_action,
-                    signal_name="ActionInvoked",
-                    dbus_interface=NOTIFS_BUS,
-                    path=NOTIFS_PATH,
-                )
-                bus.add_signal_receiver(
-                    self.service.on_closed,
-                    signal_name="NotificationClosed",
-                    dbus_interface=NOTIFS_BUS,
-                    path=NOTIFS_PATH,
-                )
+                self._notification_bus = bus
+                self._notification_signal_matches = [
+                    bus.add_signal_receiver(
+                        self._on_action_signal,
+                        signal_name="ActionInvoked",
+                        dbus_interface=NOTIFS_BUS,
+                        path=NOTIFS_PATH,
+                        bus_name=NOTIFS_BUS,
+                        sender_keyword="sender",
+                    ),
+                    bus.add_signal_receiver(
+                        self._on_closed_signal,
+                        signal_name="NotificationClosed",
+                        dbus_interface=NOTIFS_BUS,
+                        path=NOTIFS_PATH,
+                        bus_name=NOTIFS_BUS,
+                        sender_keyword="sender",
+                    ),
+                ]
             except Exception as exception:
                 err("AgentNotify: cannot subscribe to notification signals: %s" % exception)
+                self._remove_notification_signal_matches()
         self._reconcile_id = GLib.timeout_add_seconds(2, self._reconcile_handlers)
         self._reconcile_handlers()
 
@@ -443,7 +486,41 @@ class AgentNotify(Plugin):
             err("AgentNotify._on_focus_in cleanup failed: %s" % exception)
         return False
 
+    def _trusted_notification_sender(self, sender):
+        """Check the sender against the notification service's current owner."""
+        if not sender or self._notification_bus is None:
+            return False
+        try:
+            return str(sender) == str(self._notification_bus.get_name_owner(NOTIFS_BUS))
+        except Exception as exception:
+            _log("notification sender validation failed: %s" % exception)
+            return False
+
+    def _on_action_signal(self, notification_id, action_key, sender=None):
+        if not self._trusted_notification_sender(sender):
+            _log("ignored ActionInvoked from untrusted sender %s" % sender)
+            return
+        if self.service is not None:
+            self.service.on_action(notification_id, action_key)
+
+    def _on_closed_signal(self, notification_id, reason, sender=None):
+        if not self._trusted_notification_sender(sender):
+            _log("ignored NotificationClosed from untrusted sender %s" % sender)
+            return
+        if self.service is not None:
+            self.service.on_closed(notification_id, reason)
+
+    def _remove_notification_signal_matches(self):
+        for match in self._notification_signal_matches:
+            try:
+                match.remove()
+            except Exception:
+                pass
+        self._notification_signal_matches = []
+        self._notification_bus = None
+
     def unload(self):
+        self._remove_notification_signal_matches()
         if self._reconcile_id:
             try:
                 GLib.source_remove(self._reconcile_id)
