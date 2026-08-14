@@ -251,3 +251,11 @@ Version 1 is ready when:
 - the public README documents prerequisites, security behavior, limitations,
   migration, troubleshooting, and rollback.
 
+The release documentation also identifies the exact installation and selective
+uninstall commands, Codex's post-install hook trust review, environment
+defaults, runtime/plugin log locations, and the native Wayland cross-window
+focus limitation. It states that the imported Claude artwork remains Anthropic
+property and is outside the MIT license, including the retained
+`~/.claude/assets/` copies. A versioned manual release record captures actual
+desktop/backend/version data and screenshots or log evidence; automated CI
+cannot substitute for those graphical checks.

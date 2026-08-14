@@ -16,6 +16,7 @@ ROOT = Path(__file__).parents[1]
 ADAPTER = ROOT / "adapters" / "codex"
 HOOKS = ADAPTER / "hooks"
 FIXTURES = Path(__file__).parent / "fixtures" / "codex"
+SUBPROCESS_TIMEOUT = 5
 
 
 def _fake_gdbus(tmp_path):
@@ -135,7 +136,7 @@ def _fixture(name):
     return (FIXTURES / name).read_text(encoding="utf-8")
 
 
-def _run_hook(name, input_text, environment, timeout=5):
+def _run_hook(name, input_text, environment, timeout=SUBPROCESS_TIMEOUT):
     return subprocess.run(
         [sys.executable, str(HOOKS / name)],
         input=input_text,
@@ -401,8 +402,12 @@ def test_concurrent_requests_use_distinct_decisions_and_cleanup(hook_environment
         text=True,
         env=deny_environment,
     )
-    allow_stdout, allow_stderr = allow_process.communicate(payload, timeout=5)
-    deny_stdout, deny_stderr = deny_process.communicate(payload, timeout=5)
+    allow_stdout, allow_stderr = allow_process.communicate(
+        payload, timeout=SUBPROCESS_TIMEOUT
+    )
+    deny_stdout, deny_stderr = deny_process.communicate(
+        payload, timeout=SUBPROCESS_TIMEOUT
+    )
 
     assert allow_process.returncode == deny_process.returncode == 0
     assert allow_stderr == deny_stderr == ""
@@ -580,10 +585,11 @@ def test_signal_interrupt_exits_successfully_and_dismisses_exact_request(
         time.sleep(0.01)
     else:
         process.kill()
+        process.wait(timeout=SUBPROCESS_TIMEOUT)
         raise AssertionError("permission notification was not registered")
 
     process.send_signal(signal.SIGTERM)
-    process.wait(timeout=5)
+    process.wait(timeout=SUBPROCESS_TIMEOUT)
     stdout = process.stdout.read() if process.stdout else ""
     stderr = process.stderr.read() if process.stderr else ""
 
@@ -625,11 +631,12 @@ def test_repeated_signals_during_registration_still_cleanup_exact_request(
         time.sleep(0.01)
     else:
         process.kill()
+        process.wait(timeout=SUBPROCESS_TIMEOUT)
         raise AssertionError("permission notification was not registered")
 
     process.send_signal(signal.SIGTERM)
     process.send_signal(signal.SIGINT)
-    process.wait(timeout=5)
+    process.wait(timeout=SUBPROCESS_TIMEOUT)
 
     assert process.returncode == 0
     assert process.stdout.read() == ""
