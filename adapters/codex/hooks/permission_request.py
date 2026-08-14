@@ -82,9 +82,12 @@ def run() -> dict | None:
 
     request_id = f"{turn_id}:{secrets.token_hex(16)}"
     title, body = _notification_text(event)
-    registered = False
     state = None
     try:
+        try:
+            state = RuntimeState()
+        except OSError:
+            pass
         registered = notify(
             session_id,
             request_id,
@@ -96,7 +99,8 @@ def run() -> dict | None:
         if not registered:
             return None
 
-        state = RuntimeState()
+        if state is None:
+            return None
         deadline = time.monotonic() + _approval_timeout()
         while True:
             if _interrupted or time.monotonic() >= deadline:
@@ -115,14 +119,13 @@ def run() -> dict | None:
     except (KeyboardInterrupt, OSError):
         return None
     finally:
-        if registered:
-            dismiss_request(session_id, request_id)
-            if state is not None:
-                try:
-                    state.consume_decision(AGENT, session_id, request_id)
-                    state.consume_request_closed(AGENT, session_id, request_id)
-                except OSError:
-                    pass
+        dismiss_request(session_id, request_id)
+        if state is not None:
+            try:
+                state.consume_decision(AGENT, session_id, request_id)
+                state.consume_request_closed(AGENT, session_id, request_id)
+            except OSError:
+                pass
 
 
 def main() -> int:

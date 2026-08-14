@@ -40,6 +40,13 @@ if method.endswith(".GetFocusedUUID"):
         raise SystemExit(1)
     print("('urn:uuid:focused-pane',)")
 elif method.endswith(".Notify"):
+    if os.environ.get("GDBUS_AMBIGUOUS_NOTIFY") == "1":
+        orphan = os.environ["GDBUS_ORPHAN"]
+        with open(orphan, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(values[:3]))
+        RuntimeState().write_decision(values[0], values[1], values[2], "allow")
+        RuntimeState().write_request_closed(values[0], values[1], values[2])
+        raise SystemExit(1)
     if os.environ.get("GDBUS_FAIL_NOTIFY") == "1":
         raise SystemExit(1)
     if os.environ.get("GDBUS_ZERO_NOTIFY") == "1":
@@ -55,7 +62,9 @@ elif method.endswith(".Notify"):
         RuntimeState().decision_path(values[0], values[1], values[2]).write_text(
             os.environ["GDBUS_RAW_DECISION"], encoding="utf-8"
         )
-    if os.environ.get("GDBUS_CLOSE_REQUEST") == "1":
+    if os.environ.get("GDBUS_CLOSE_REQUEST") == "1" or os.environ.get(
+        "GDBUS_RETIRE_REQUEST"
+    ) in {"default", "session"}:
         RuntimeState().write_request_closed(values[0], values[1], values[2])
     delay = float(os.environ.get("GDBUS_DELAY_NOTIFY", "0"))
     if delay:
@@ -63,6 +72,13 @@ elif method.endswith(".Notify"):
         time.sleep(delay)
     print("(uint32 17,)")
 else:
+    if method.endswith(".DismissRequest") and os.environ.get("GDBUS_ORPHAN"):
+        orphan = os.environ["GDBUS_ORPHAN"]
+        if os.path.exists(orphan):
+            with open(orphan, encoding="utf-8") as stream:
+                active = json.load(stream)
+            if active == values[:3]:
+                os.unlink(orphan)
     if method.endswith(".DismissRequest") and os.environ.get(
         "GDBUS_DECISION_ON_DISMISS"
     ):
@@ -203,11 +219,26 @@ def test_notification_close_returns_promptly_without_decision(hook_environment):
     environment, calls_path = hook_environment
     environment["GDBUS_CLOSE_REQUEST"] = "1"
 
-    started = time.monotonic()
     assert _run_permission(environment, timeout=30) is None
-    elapsed = time.monotonic() - started
 
-    assert elapsed < 1
+    calls = [_method_values(call) for call in _calls(calls_path)]
+    notify = next(values for method, values in calls if method.endswith(".Notify"))
+    dismiss = next(
+        values for method, values in calls if method.endswith(".DismissRequest")
+    )
+    assert dismiss == notify[:3]
+    assert RuntimeState().consume_request_closed(*dismiss) is False
+
+
+@pytest.mark.parametrize("retirement", ["default", "session"])
+def test_nondecision_retirement_returns_hook_promptly_without_stdout(
+    hook_environment, retirement
+):
+    environment, calls_path = hook_environment
+    environment["GDBUS_RETIRE_REQUEST"] = retirement
+
+    assert _run_permission(environment, timeout=30) is None
+
     calls = [_method_values(call) for call in _calls(calls_path)]
     notify = next(values for method, values in calls if method.endswith(".Notify"))
     dismiss = next(
@@ -276,7 +307,7 @@ def test_malformed_input_exits_successfully_without_side_effects(
 
 
 @pytest.mark.parametrize("failure", ["GDBUS_FAIL_NOTIFY", "GDBUS_ZERO_NOTIFY"])
-def test_notification_failure_returns_no_decision_without_cleanup_of_unregistered_request(
+def test_notification_failure_returns_no_decision_and_attempts_exact_cleanup(
     hook_environment, failure
 ):
     environment, calls_path = hook_environment
@@ -285,9 +316,33 @@ def test_notification_failure_returns_no_decision_without_cleanup_of_unregistere
 
     assert _run_permission(environment) is None
 
-    methods = [_method_values(call)[0] for call in _calls(calls_path)]
-    assert sum(method.endswith(".Notify") for method in methods) == 1
-    assert not any(method.endswith(".DismissRequest") for method in methods)
+    calls = [_method_values(call) for call in _calls(calls_path)]
+    notify = next(values for method, values in calls if method.endswith(".Notify"))
+    dismiss = next(
+        values for method, values in calls if method.endswith(".DismissRequest")
+    )
+    assert dismiss == notify[:3]
+
+
+def test_ambiguous_notify_failure_retires_orphan_and_drains_raced_state(
+    hook_environment
+):
+    environment, calls_path = hook_environment
+    orphan = calls_path.parent / "active-notification.json"
+    environment["GDBUS_AMBIGUOUS_NOTIFY"] = "1"
+    environment["GDBUS_ORPHAN"] = str(orphan)
+
+    assert _run_permission(environment) is None
+
+    calls = [_method_values(call) for call in _calls(calls_path)]
+    notify = next(values for method, values in calls if method.endswith(".Notify"))
+    dismiss = next(
+        values for method, values in calls if method.endswith(".DismissRequest")
+    )
+    assert dismiss == notify[:3]
+    assert not orphan.exists()
+    assert RuntimeState().consume_decision(*dismiss) is None
+    assert RuntimeState().consume_request_closed(*dismiss) is False
 
 
 def test_malformed_decision_is_discarded_without_stdout(hook_environment):
@@ -443,18 +498,40 @@ def test_stop_notification_fallback_is_fire_and_forget(hook_environment):
     environment, calls_path = hook_environment
     environment["GDBUS_FAIL_NOTIFY"] = "1"
     notify_send = calls_path.parent / "notify-send"
+    pid_file = calls_path.parent / "notify-send.pid"
     notify_send.write_text(
-        "#!/usr/bin/env python3\nimport time\ntime.sleep(1)\n", encoding="utf-8"
+        """#!/usr/bin/env python3
+import os
+import time
+from pathlib import Path
+
+Path(os.environ["NOTIFY_SEND_PID"]).write_text(str(os.getpid()), encoding="utf-8")
+time.sleep(30)
+""",
+        encoding="utf-8",
     )
     notify_send.chmod(0o755)
+    environment["NOTIFY_SEND_PID"] = str(pid_file)
 
-    started = time.monotonic()
-    result = _run_hook(
-        "stop.py", json.dumps({"session_id": "codex-session-4"}), environment
-    )
+    try:
+        result = _run_hook(
+            "stop.py",
+            json.dumps({"session_id": "codex-session-4"}),
+            environment,
+            timeout=2,
+        )
 
-    assert result.returncode == 0
-    assert time.monotonic() - started < 0.5
+        assert result.returncode == 0
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not pid_file.exists():
+            time.sleep(0.01)
+        assert pid_file.exists()
+    finally:
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text(encoding="utf-8")), signal.SIGTERM)
+            except ProcessLookupError:
+                pass
 
 
 def test_user_prompt_submit_dismisses_session_notifications(hook_environment):

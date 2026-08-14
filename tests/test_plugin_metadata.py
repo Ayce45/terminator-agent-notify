@@ -103,6 +103,7 @@ def test_dismiss_request_retires_before_closing_notification(tmp_path):
     service.DismissRequest("codex", "s1", "r1")
 
     assert state.consume_decision("codex", "s1", "r1") is None
+    assert state.consume_request_closed("codex", "s1", "r1") is True
     assert notifications.closed == [nid]
 
 
@@ -128,15 +129,33 @@ def test_action_driven_close_does_not_mark_request_closed(tmp_path):
     assert state.consume_request_closed("codex", "s1", "r1") is False
 
 
+def test_default_focus_action_marks_codex_permission_closed(tmp_path):
+    service, notifications, state = make_service(tmp_path)
+    nid = service.notify("codex", "s1", "r1", "pane", "permission", PAYLOAD)
+
+    service.on_action(nid, "default")
+    service.on_closed(nid, 3)
+
+    assert service.focused == ["pane"]
+    assert notifications.closed == [nid]
+    assert state.consume_request_closed("codex", "s1", "r1") is True
+    assert state.consume_request_closed("codex", "s1", "r1") is False
+    assert state.consume_decision("codex", "s1", "r1") is None
+
+
 def test_session_dismissal_preserves_other_agent_namespace(tmp_path):
-    service, notifications, _state = make_service(tmp_path)
+    service, notifications, state = make_service(tmp_path)
     codex = service.notify("codex", "same", "r1", "pane", "permission", PAYLOAD)
     claude = service.notify("claude", "same", "r1", "pane", "permission", PAYLOAD)
 
     assert service.DismissSession("codex", "same") is True
+    service.on_closed(codex, 3)
 
     assert notifications.closed == [codex]
     assert claude in service._notif_meta
+    assert state.consume_request_closed("codex", "same", "r1") is True
+    assert state.consume_request_closed("codex", "same", "r1") is False
+    assert state.consume_request_closed("claude", "same", "r1") is False
 
 
 def test_focus_cleanup_only_dismisses_non_permission_notifications(tmp_path):

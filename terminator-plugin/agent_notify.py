@@ -350,7 +350,22 @@ class FocusService(dbus.service.Object):
         )
         return True
 
-    def _close_and_untrack(self, notification_id):
+    def _mark_request_closed(self, metadata):
+        if (
+            metadata is None
+            or metadata[0] != "codex"
+            or metadata[4] != "permission"
+        ):
+            return
+        try:
+            self._state.write_request_closed(metadata[0], metadata[1], metadata[2])
+        except (OSError, ValueError) as exception:
+            _log("request closure state failed: %s" % exception)
+
+    def _close_and_untrack(self, notification_id, request_closed=True):
+        metadata = self._notif_meta.get(notification_id)
+        if request_closed:
+            self._mark_request_closed(metadata)
         self._untrack(notification_id)
         try:
             self._notifs.CloseNotification(dbus.UInt32(notification_id))
@@ -393,24 +408,16 @@ class FocusService(dbus.service.Object):
                     request_id,
                     "allow" if action_key == "approve" else "deny",
                 )
+            self._close_and_untrack(notification_id, request_closed=False)
         else:
+            self._close_and_untrack(notification_id)
             self._focus(pane_uuid)
-        self._close_and_untrack(notification_id)
 
     def on_closed(self, notification_id, _reason):
         notification_id = int(notification_id)
         metadata = self._notif_meta.get(notification_id)
-        try:
-            if (
-                metadata is not None
-                and metadata[0] == "codex"
-                and metadata[4] == "permission"
-            ):
-                self._state.write_request_closed(metadata[0], metadata[1], metadata[2])
-        except (OSError, ValueError) as exception:
-            _log("request closure state failed: %s" % exception)
-        finally:
-            self._untrack(notification_id)
+        self._mark_request_closed(metadata)
+        self._untrack(notification_id)
 
 
 class AgentNotify(Plugin):
