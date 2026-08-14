@@ -13,6 +13,14 @@ export XDG_STATE_HOME="$TEST_ROOT/state"
 export XDG_SESSION_TYPE=x11
 mkdir -p "$HOME/.claude" "$HOME/.codex" "$TEST_ROOT/bin"
 
+TERMINATOR_SYSTEM_DESKTOP="$TEST_ROOT/terminator.desktop"
+export TERMINATOR_SYSTEM_DESKTOP
+cat > "$TERMINATOR_SYSTEM_DESKTOP" <<'EOF'
+[Desktop Entry]
+Name=Terminator CI fixture
+Exec=terminator
+EOF
+
 SYSTEMCTL_LOG="$TEST_ROOT/systemctl.log"
 export SYSTEMCTL_LOG
 cat > "$TEST_ROOT/bin/systemctl" <<'EOF'
@@ -343,6 +351,8 @@ mkdir -p "$HOME"
 GSETTINGS_TEST_MODE=unrelated-x11 FORCE_XWAYLAND=1 \
   "$ROOT/install.sh" claude >/dev/null
 test -f "$XDG_STATE_HOME/terminator-agent-notify/xwayland-owned"
+grep -q '^Name=Terminator CI fixture$' \
+  "$HOME/.local/share/applications/terminator.desktop"
 "$ROOT/uninstall.sh" claude >/dev/null
 
 # When this project applies the helper, it records ownership and undoes only

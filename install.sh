@@ -25,6 +25,7 @@ XWAYLAND_DESKTOP_SNAPSHOT="$STATE_DIR/xwayland-owned.desktop"
 TERMINATOR_ROOT="$XDG_CONFIG_HOME/terminator"
 SYSTEMD_USER="$XDG_CONFIG_HOME/systemd/user"
 UNIT_PREFIX="terminator-agent-notify"
+TERMINATOR_SYSTEM_DESKTOP=${TERMINATOR_SYSTEM_DESKTOP:-/usr/share/applications/terminator.desktop}
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m  %s\n' "$*" >&2; }
@@ -140,7 +141,7 @@ prepare_xwayland_ownership() {
       esac
     done < <(printf '%s\n' "$list" | grep -oE "/[^']*custom-keybindings/[^']*/" || true)
   fi
-  if [ -f /usr/share/applications/terminator.desktop ] && \
+  if [ -f "$TERMINATOR_SYSTEM_DESKTOP" ] && \
       [ ! -e "$HOME/.local/share/applications/terminator.desktop" ]; then
     owns_desktop=1
   fi

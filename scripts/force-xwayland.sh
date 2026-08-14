@@ -19,7 +19,7 @@
 set -uo pipefail
 
 MARKER="# claude-terminator-notify: forces XWayland (GDK_BACKEND=x11)"
-SYS_DESKTOP="/usr/share/applications/terminator.desktop"
+SYS_DESKTOP=${TERMINATOR_SYSTEM_DESKTOP:-/usr/share/applications/terminator.desktop}
 USER_DESKTOP="${HOME}/.local/share/applications/terminator.desktop"
 PREFIX="env GDK_BACKEND=x11 "
 MK_SCHEMA="org.gnome.settings-daemon.plugins.media-keys"
