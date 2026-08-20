@@ -263,6 +263,8 @@ def install(arguments: argparse.Namespace) -> None:
         owned = bool(existing and existing.get("owned")) or not exists
         if current != candidate.digest:
             _atomic_write(path, candidate.payload, candidate.mode)
+        elif stat.S_IMODE(path.stat().st_mode) != candidate.mode:
+            os.chmod(path, candidate.mode)
         entries[str(path)] = {
             "mode": candidate.mode,
             "owned": owned,

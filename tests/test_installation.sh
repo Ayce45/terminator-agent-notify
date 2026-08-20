@@ -105,6 +105,12 @@ test -f "$XDG_STATE_HOME/terminator-agent-notify/plugin-activation-owned"
 test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/__init__.py"
 test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude/autoresume.py"
 test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex/hooks/stop.py"
+for hook in "$XDG_DATA_HOME/terminator-agent-notify/adapters"/*/hooks/*; do
+  test -x "$hook"
+done
+chmod 644 "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex/hooks/stop.py"
+$ROOT/install.sh both >/dev/null
+test -x "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex/hooks/stop.py"
 (cd "$TEST_ROOT" && python3 -I "$ROOT/tests/installed_layout_import.py" \
   "$XDG_CONFIG_HOME/terminator")
 (cd "$TEST_ROOT" && printf '{}\n' | python3 -I \
