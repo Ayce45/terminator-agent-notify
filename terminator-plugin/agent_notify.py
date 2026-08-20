@@ -70,7 +70,7 @@ KEY_DENY = "\x1b"
 ICON_DIR = Path(__file__).resolve().parent.parent / "assets"
 ICON_PATHS = {
     "claude": str(ICON_DIR / "claude.png"),
-    "codex": str(ICON_DIR / "codex.png"),
+    "codex": str(ICON_DIR / "codex-mark.png"),
 }
 
 

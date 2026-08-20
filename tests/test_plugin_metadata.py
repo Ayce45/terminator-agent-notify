@@ -206,7 +206,7 @@ def test_notifications_carry_the_agent_icon(tmp_path):
 
     icons = [arguments[2] for arguments in notifications.created]
     assert icons[0].endswith("assets/claude.png")
-    assert icons[1].endswith("assets/codex.png")
+    assert icons[1].endswith("assets/codex-mark.png")
 
 
 def test_codex_permission_requires_session_and_request_ids(tmp_path):

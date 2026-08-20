@@ -101,7 +101,7 @@ PY
       2>/dev/null || true)
   if ! [[ "$notify_reply" =~ ^\(uint32[[:space:]]+[1-9][0-9]*,\)$ ]]; then
     notify_args=(--app-name="Codex")
-    codex_icon="${XDG_CONFIG_HOME:-$HOME/.config}/terminator/assets/codex.png"
+    codex_icon="${XDG_CONFIG_HOME:-$HOME/.config}/terminator/assets/codex-mark.png"
     [ -f "$codex_icon" ] && notify_args+=(--icon="$codex_icon")
     if [ -n "$notification_expiry_ms" ]; then
       notify_args+=(--expire-time="$notification_expiry_ms")

@@ -103,7 +103,7 @@ def fallback_notification(title: str, body: str) -> None:
         Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
         / "terminator"
         / "assets"
-        / "codex.png"
+        / "codex-mark.png"
     )
     if icon.is_file():
         command.append(f"--icon={icon}")
