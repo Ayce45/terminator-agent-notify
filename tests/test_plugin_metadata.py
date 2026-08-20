@@ -160,15 +160,42 @@ def test_session_dismissal_preserves_other_agent_namespace(tmp_path):
     assert state.consume_request_closed("claude", "same", "r1") is False
 
 
-def test_focus_cleanup_only_dismisses_non_permission_notifications(tmp_path):
-    service, notifications, _state = make_service(tmp_path)
+def test_focus_cleanup_dismisses_every_notification_of_the_pane(tmp_path):
+    service, notifications, state = make_service(tmp_path)
     permission = service.notify("codex", "s1", "r1", "pane", "permission", PAYLOAD)
     complete = service.notify("codex", "s2", "", "pane", "complete", PAYLOAD)
 
     service.dismiss_pane("pane")
 
-    assert notifications.closed == [complete]
-    assert permission in service._notif_meta
+    assert sorted(notifications.closed) == sorted([permission, complete])
+    assert permission not in service._notif_meta
+    assert state.consume_request_closed("codex", "s1", "r1") is True
+    assert state.consume_decision("codex", "s1", "r1") is None
+
+
+def test_focus_cleanup_dismisses_claude_permission_without_key_injection(tmp_path):
+    service, notifications, state = make_service(tmp_path)
+    injected = []
+    service._send_keys = lambda pane, keys: injected.append((pane, keys)) or True
+    permission = service.notify("claude", "s1", "r1", "pane", "permission", PAYLOAD)
+
+    service.dismiss_pane("pane")
+
+    assert notifications.closed == [permission]
+    assert injected == []
+    assert state.consume_request_closed("claude", "s1", "r1") is False
+
+
+def test_focus_cleanup_leaves_other_panes_untouched(tmp_path):
+    service, notifications, state = make_service(tmp_path)
+    other = service.notify("codex", "s1", "r1", "other-pane", "permission", PAYLOAD)
+    service.notify("codex", "s2", "", "pane", "complete", PAYLOAD)
+
+    service.dismiss_pane("pane")
+
+    assert other in service._notif_meta
+    assert other not in notifications.closed
+    assert state.consume_request_closed("codex", "s1", "r1") is False
 
 
 def test_codex_permission_requires_session_and_request_ids(tmp_path):

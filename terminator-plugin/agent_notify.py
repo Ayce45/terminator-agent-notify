@@ -491,17 +491,18 @@ class FocusService(dbus.service.Object):
             pass
 
     def dismiss_pane(self, pane_uuid):
-        """Clear informational notices on focus, never pending approvals.
+        """Close every notification of the focused pane, deciding nothing.
 
-        Pane focus has no request identity, so it can span sessions.  The safe
-        invariant is to close only non-permission notifications here; callers
-        with a request identity must use :meth:`DismissRequest` instead.
+        Focus never means allow or deny: a Claude permission close takes no
+        further action (the user answers in the terminal), while a Codex
+        permission close writes the request's closed state so its waiting hook
+        returns no decision and falls back to Codex's terminal prompt.
         """
         target = _normalize(pane_uuid)
         notification_ids = [
             notification_id
             for notification_id, metadata in self._notif_meta.items()
-            if _normalize(metadata[3]) == target and metadata[4] != "permission"
+            if _normalize(metadata[3]) == target
         ]
         for notification_id in notification_ids:
             self._close_and_untrack(notification_id)
