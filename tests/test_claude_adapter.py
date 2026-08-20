@@ -682,7 +682,7 @@ def test_send_falls_back_to_notify_send_when_the_service_is_unavailable(
         text=True,
     )
 
-    assert "Claude Code — resumed automatically" in fallback.read_text(encoding="utf-8")
+    assert "Resumed automatically" in fallback.read_text(encoding="utf-8")
 
 
 def test_generic_expiry_reaches_claude_notify_send_fallback(tmp_path, monkeypatch):

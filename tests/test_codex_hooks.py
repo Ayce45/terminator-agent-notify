@@ -11,6 +11,7 @@ import pytest
 
 from terminator_agent_notify_core.runtime_state import RuntimeState
 from adapters.codex.hooks import permission_request
+from adapters.codex.hooks import user_prompt_submit
 from adapters.codex import common as codex_common
 
 
@@ -91,11 +92,11 @@ else:
             values[2],
             os.environ["GDBUS_DECISION_ON_DISMISS"],
         )
-    delay = (
-        float(os.environ.get("GDBUS_DELAY_DISMISS", "0"))
-        if method.endswith(".DismissRequest")
-        else 0
-    )
+    delay = 0
+    if method.endswith(".DismissRequest"):
+        delay = float(os.environ.get("GDBUS_DELAY_DISMISS", "0"))
+    elif method.endswith(".SetPaneTitle"):
+        delay = float(os.environ.get("GDBUS_DELAY_SET_TITLE", "0"))
     if delay:
         import time
         time.sleep(delay)
@@ -223,7 +224,7 @@ def test_permission_notification_has_description_and_limited_command_preview(
         if _method_values(call)[0].endswith(".Notify")
     )
     notification = json.loads(notify[5])
-    assert notification["title"] == "Codex — project"
+    assert notification["title"] == "project"
     assert "Permission requested — Bash" in notification["body"]
     assert "Inspect the working tree" in notification["body"]
     assert "x" * 200 in notification["body"]
@@ -276,7 +277,7 @@ def test_stop_posts_completion_notification(hook_environment):
     )
     assert notify[:5] == ["codex", "codex-session-4", "", "pane-4", "complete"]
     assert json.loads(notify[5]) == {
-        "title": "Codex — project",
+        "title": "project",
         "body": "Task complete — waiting for your next instruction.",
     }
 
@@ -377,6 +378,73 @@ def test_user_prompt_submit_dismisses_session_notifications(hook_environment):
     ]
 
 
+def test_first_codex_prompt_sets_a_short_local_pane_title_once(hook_environment):
+    environment, calls_path = hook_environment
+    RuntimeState().record_pane("codex", "title-session", "pane-title")
+    event = {
+        "session_id": "title-session",
+        "prompt": "  Corriger   les notifications Terminator avec un titre vraiment beaucoup trop long pour rester entier  ",
+    }
+
+    first = _run_hook("user_prompt_submit.py", json.dumps(event), environment)
+    second = _run_hook("user_prompt_submit.py", json.dumps(event), environment)
+
+    assert first.returncode == second.returncode == 0
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        if any(
+            method.endswith(".SetPaneTitle")
+            for method, _values in map(_method_values, _calls(calls_path))
+        ):
+            break
+        time.sleep(0.01)
+    calls = [_method_values(call) for call in _calls(calls_path)]
+    title_calls = [values for method, values in calls if method.endswith(".SetPaneTitle")]
+    assert title_calls == [
+        ["pane-title", "Corriger les notifications Terminator avec un titre vraiment…"]
+    ]
+
+
+def test_slow_title_update_does_not_delay_prompt_hook(hook_environment):
+    environment, _calls_path = hook_environment
+    environment["GDBUS_DELAY_SET_TITLE"] = "2"
+    RuntimeState().record_pane("codex", "slow-title", "pane-title")
+
+    started = time.monotonic()
+    result = _run_hook(
+        "user_prompt_submit.py",
+        json.dumps({"session_id": "slow-title", "prompt": "Fix notifications"}),
+        environment,
+    )
+
+    assert result.returncode == 0
+    assert time.monotonic() - started < 1
+
+
+def test_title_worker_argv_never_contains_prompt(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    launched = []
+    secret = "secret-token\x00" + "x" * 200_000
+    monkeypatch.setattr(
+        user_prompt_submit.subprocess,
+        "Popen",
+        lambda arguments, **_kwargs: launched.append(arguments),
+    )
+
+    user_prompt_submit._schedule_first_title("argv-session", secret)
+
+    assert launched == [[
+        sys.executable,
+        str(user_prompt_submit.Path(user_prompt_submit.__file__).resolve()),
+        "--set-title",
+        "argv-session",
+    ]]
+    claimed = RuntimeState().read_title_claim("codex", "argv-session")
+    assert claimed is not None
+    assert "\x00" not in claimed
+    assert len(claimed) <= 61
+
+
 def _recording_notify_send(calls_path, environment):
     fallback = calls_path.parent / "notify-send.calls"
     notify_send = calls_path.parent / "notify-send"
@@ -399,7 +467,7 @@ def test_permission_falls_back_to_plain_notification_when_plugin_unreachable(
     assert _run_permission(environment) is None
 
     recorded = fallback.read_text(encoding="utf-8")
-    assert "Codex — project" in recorded
+    assert "project" in recorded
     assert "Permission requested — Bash" in recorded
     assert "Answer in the terminal." in recorded
 
@@ -454,7 +522,7 @@ def test_permission_notification_matches_the_claude_message_format():
 
     title, body = permission_request._notification_text(event)
 
-    assert title == "Codex — important-project"
+    assert title == "important-project"
     assert body.startswith("Permission requested — Bash")
     assert "Command: git status --short" in body
 

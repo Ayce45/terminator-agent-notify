@@ -130,7 +130,7 @@ import json
 import sys
 
 print(json.dumps(
-    {"title": "Claude Code — resumed automatically", "body": f"\"{sys.argv[1]}\" sent after the usage limit reset."},
+    {"title": "Resumed automatically", "body": f"\"{sys.argv[1]}\" sent after the usage limit reset."},
     ensure_ascii=False,
 ))
 PY
@@ -148,7 +148,7 @@ PY
     command -v notify-send >/dev/null 2>&1 && \
       timeout "${COMMAND_TIMEOUT_SECONDS}s" \
         notify-send "${notify_args[@]}" \
-        "Claude Code — resumed automatically" \
+        "Resumed automatically" \
         "\"${message}\" sent after the usage limit reset." >/dev/null 2>&1 || true
   fi
 fi

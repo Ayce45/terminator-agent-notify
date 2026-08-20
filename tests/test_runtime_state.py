@@ -16,6 +16,26 @@ def test_agent_sessions_are_isolated(tmp_path):
     assert state.read_pane("codex", "same") == "codex-pane"
 
 
+def test_session_title_marker_is_persisted_per_agent_session(tmp_path):
+    state = RuntimeState(tmp_path)
+
+    assert state.title_was_set("codex", "s1") is False
+    state.record_title_set("codex", "s1")
+
+    assert state.title_was_set("codex", "s1") is True
+    assert state.title_was_set("codex", "s2") is False
+
+
+def test_title_claim_is_atomic_and_can_be_released(tmp_path):
+    state = RuntimeState(tmp_path)
+
+    assert state.claim_title("codex", "s1", "Private title") is True
+    assert state.read_title_claim("codex", "s1") == "Private title"
+    assert state.claim_title("codex", "s1") is False
+    state.release_title_claim("codex", "s1")
+    assert state.claim_title("codex", "s1") is True
+
+
 def test_decision_is_consumed_once(tmp_path):
     state = RuntimeState(tmp_path)
     state.write_decision("codex", "s1", "r1", "allow")

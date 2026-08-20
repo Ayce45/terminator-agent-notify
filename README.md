@@ -98,6 +98,13 @@ focus or when a new prompt is submitted. If the plugin or notification daemon
 is unavailable, hooks do not block the agent: completion notifications may use
 `notify-send`, while normal terminal interaction remains available.
 
+Notification titles use the originating pane title without repeating the
+agent name; the Claude or Codex icon already identifies the application.
+Claude's own AI-generated terminal title is preserved. Codex has no equivalent
+title field, so its `UserPromptSubmit` hook derives a local, whitespace-normalized
+title from the first prompt (up to roughly 60 characters) and keeps it for the
+session. This does not call an AI service and never delays prompt submission.
+
 Codex handles its native `PermissionRequest` hook as follows:
 
 - The hook registers the notification and returns immediately without a

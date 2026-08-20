@@ -254,7 +254,7 @@ def test_notification_uses_custom_pane_title_without_changing_routing(tmp_path, 
 
     service.notify("claude", "s1", "", "pane", "waiting", PAYLOAD)
 
-    assert notifications.created[0][3] == "Claude Code — jira-run-bugs"
+    assert notifications.created[0][3] == "jira-run-bugs"
 
 
 def test_notification_uses_dynamic_terminal_title_when_no_custom_title(tmp_path, monkeypatch):
@@ -272,7 +272,29 @@ def test_notification_uses_dynamic_terminal_title_when_no_custom_title(tmp_path,
 
     service.notify("claude", "s1", "", "pane", "waiting", PAYLOAD)
 
-    assert notifications.created[0][3] == "Claude Code — jira-run-bugs-automation"
+    assert notifications.created[0][3] == "jira-run-bugs-automation"
+
+
+def test_set_pane_title_updates_only_the_exact_terminal(tmp_path, monkeypatch):
+    service, _notifications, _state = make_service(tmp_path)
+    titles = {"pane-a": [], "pane-b": []}
+
+    def terminal(name):
+        return SimpleNamespace(
+            uuid=f"urn:uuid:{name}",
+            titlebar=SimpleNamespace(
+                set_custom_string=lambda value: titles[name].append(value)
+            ),
+        )
+
+    monkeypatch.setitem(
+        service.SetPaneTitle.__globals__,
+        "Terminator",
+        lambda: SimpleNamespace(terminals=[terminal("pane-a"), terminal("pane-b")]),
+    )
+
+    assert service.SetPaneTitle("pane-b", "Corriger les notifications") is True
+    assert titles == {"pane-a": [], "pane-b": ["Corriger les notifications"]}
 
 
 def test_find_notebook_accepts_terminator_notebook_compatible_container(tmp_path):

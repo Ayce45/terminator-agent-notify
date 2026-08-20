@@ -51,9 +51,9 @@ print(RuntimeState().read_pane("claude", sys.argv[2]) or "")
 PY
 )
 
-title="Claude Code"
+title="Attention required"
 if [ -n "$cwd" ]; then
-  title="Claude Code — $(basename "$cwd")"
+  title="$(basename "$cwd")"
 fi
 kind="waiting"
 case "$event" in

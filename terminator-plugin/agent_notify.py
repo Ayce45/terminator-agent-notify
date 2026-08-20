@@ -207,6 +207,20 @@ class FocusService(dbus.service.Object):
     def FocusTerminal(self, uuid):
         return self._focus(uuid)
 
+    @dbus.service.method(BUS_NAME, in_signature="ss", out_signature="b")
+    def SetPaneTitle(self, uuid, title):
+        try:
+            terminal = _find_terminal(uuid)
+            title = str(title).strip()
+            if terminal is None or not title:
+                return False
+            terminal.titlebar.set_custom_string(title)
+            _log("pane title: uuid=%s title=%s" % (uuid, title))
+            return True
+        except Exception as exception:
+            err("AgentNotify.SetPaneTitle failed: %s" % exception)
+            return False
+
     def _focus(self, uuid):
         try:
             terminal = _find_terminal(uuid)
@@ -421,10 +435,7 @@ class FocusService(dbus.service.Object):
                     except Exception:
                         pane_title = ""
                 if pane_title:
-                    title = "%s — %s" % (
-                        "Claude Code" if agent == "claude" else "Codex",
-                        pane_title,
-                    )
+                    title = pane_title
         except (TypeError, ValueError, json.JSONDecodeError) as exception:
             _log("Notify: invalid request: %s" % exception)
             return 0

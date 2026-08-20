@@ -163,4 +163,4 @@ def pane_for(session_id: str) -> str:
 
 def session_title(event: dict[str, Any]) -> str:
     cwd = text_field(event, "cwd")
-    return f"Codex — {Path(cwd).name}" if cwd and Path(cwd).name else "Codex"
+    return Path(cwd).name if cwd and Path(cwd).name else "Attention required"

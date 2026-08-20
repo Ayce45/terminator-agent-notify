@@ -94,7 +94,7 @@ import json
 import sys
 
 print(json.dumps(
-    {"title": "Codex — resumed automatically", "body": f"\"{sys.argv[1]}\" sent after the usage limit reset."},
+    {"title": "Resumed automatically", "body": f"\"{sys.argv[1]}\" sent after the usage limit reset."},
     ensure_ascii=False,
 ))
 PY
@@ -111,7 +111,7 @@ PY
       notify_args+=(--expire-time="$notification_expiry_ms")
     fi
     command -v notify-send >/dev/null 2>&1 && \
-      notify-send "${notify_args[@]}" "Codex — resumed automatically" \
+      notify-send "${notify_args[@]}" "Resumed automatically" \
         "\"${message}\" sent after the usage limit reset." >/dev/null 2>&1 || true
   fi
 fi

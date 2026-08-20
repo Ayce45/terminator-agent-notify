@@ -212,7 +212,7 @@ def process(path, sid=None):
     if os.environ.get("CLAUDE_AUTORESUME_ARM_NOTIFY", "1") != "0":
         _notify(
             session_id,
-            "Claude Code — resume scheduled",
+            "Resume scheduled",
             f'Usage limit reached. "{MESSAGE}" will be sent automatically at {target:%H:%M}.',
         )
     return True

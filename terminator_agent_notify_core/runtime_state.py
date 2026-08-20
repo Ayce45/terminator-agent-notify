@@ -89,6 +89,18 @@ class RuntimeState:
         self._ensure_directory(directory)
         return directory / f"{_digest(request_id)}.decision"
 
+    def title_path(self, agent: str, session_id: str) -> Path:
+        self._check_agent(agent)
+        directory = self.root / "titles" / _digest(agent)
+        self._ensure_directory(directory)
+        return directory / f"{_digest(session_id)}.title"
+
+    def title_claim_path(self, agent: str, session_id: str) -> Path:
+        self._check_agent(agent)
+        directory = self.root / "title-claims" / _digest(agent)
+        self._ensure_directory(directory)
+        return directory / f"{_digest(session_id)}.claim"
+
     def request_closed_path(
         self, agent: str, session_id: str, request_id: str
     ) -> Path:
@@ -106,6 +118,50 @@ class RuntimeState:
             return path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return None
+
+    def record_title_set(self, agent: str, session_id: str) -> None:
+        self._atomic_write(self.title_path(agent, session_id), "set")
+
+    def title_was_set(self, agent: str, session_id: str) -> bool:
+        return self.title_path(agent, session_id).is_file()
+
+    def claim_title(self, agent: str, session_id: str, title: str = "") -> bool:
+        if self.title_was_set(agent, session_id):
+            return False
+        path = self.title_claim_path(agent, session_id)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(path, flags, 0o600)
+        except FileExistsError:
+            return False
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(title)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+        return True
+
+    def read_title_claim(self, agent: str, session_id: str) -> str | None:
+        try:
+            return self.title_claim_path(agent, session_id).read_text(encoding="utf-8")
+        except (FileNotFoundError, UnicodeDecodeError):
+            return None
+
+    def release_title_claim(self, agent: str, session_id: str) -> None:
+        try:
+            self.title_claim_path(agent, session_id).unlink()
+        except FileNotFoundError:
+            pass
 
     def write_decision(
         self, agent: str, session_id: str, request_id: str, decision: str
