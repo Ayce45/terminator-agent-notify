@@ -24,6 +24,7 @@ from adapters.codex.common import (
     notifications_enabled,
     pane_for,
     read_event,
+    session_title,
     text_field,
 )
 
@@ -62,10 +63,12 @@ def _notification_text(event):
     command = command.strip() if isinstance(command, str) else ""
     if len(command) > COMMAND_PREVIEW_LIMIT:
         command = f"{command[: COMMAND_PREVIEW_LIMIT - 1]}…"
-    lines = [description or "Approval requested."]
+    lines = [f"Permission requested — {tool_name}"]
+    if description:
+        lines.append(description)
     if command:
         lines.append(f"Command: {command}")
-    return f"Codex permission — {tool_name}", "\n".join(lines)
+    return session_title(event), "\n".join(lines)
 
 
 def _decision_output(decision: str):

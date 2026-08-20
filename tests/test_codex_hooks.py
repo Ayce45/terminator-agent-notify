@@ -464,7 +464,8 @@ def test_permission_notification_has_description_and_limited_command_preview(
         if _method_values(call)[0].endswith(".Notify")
     )
     notification = json.loads(notify[5])
-    assert "Bash" in notification["title"]
+    assert notification["title"] == "Codex — project"
+    assert "Permission requested — Bash" in notification["body"]
     assert "Inspect the working tree" in notification["body"]
     assert "x" * 200 in notification["body"]
     assert "x" * 300 not in notification["body"]
@@ -729,7 +730,8 @@ def test_permission_falls_back_to_plain_notification_when_plugin_unreachable(
     assert _run_permission(environment) is None
 
     recorded = fallback.read_text(encoding="utf-8")
-    assert "Codex permission — Bash" in recorded
+    assert "Codex — project" in recorded
+    assert "Permission requested — Bash" in recorded
     assert "Answer in the terminal." in recorded
 
 
@@ -770,3 +772,19 @@ def test_pre_tool_use_ignores_other_tools(hook_environment):
     assert result.returncode == 0
     assert result.stdout == ""
     assert _calls(calls_path) == []
+
+
+def test_permission_notification_matches_the_claude_message_format():
+    event = {
+        "session_id": "s1",
+        "turn_id": "t1",
+        "cwd": "/workspaces/important-project",
+        "tool_name": "Bash",
+        "tool_input": {"command": "git status --short"},
+    }
+
+    title, body = permission_request._notification_text(event)
+
+    assert title == "Codex — important-project"
+    assert body.startswith("Permission requested — Bash")
+    assert "Command: git status --short" in body

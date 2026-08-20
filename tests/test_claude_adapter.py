@@ -815,3 +815,39 @@ def test_claude_send_bounds_hung_sendkeys_call(tmp_path, monkeypatch):
 
     assert result.returncode != 0
     assert time.monotonic() - started < 1.5
+
+
+def test_question_notification_is_not_treated_as_a_permission(tmp_path, monkeypatch):
+    calls = _hook_environment(tmp_path, monkeypatch)
+    payload = {
+        "hook_event_name": "Notification",
+        "session_id": "claude-question",
+        "cwd": "/workspaces/important-project",
+        "message": "Claude needs your permission to use AskUserQuestion",
+    }
+    RuntimeState().record_pane("claude", payload["session_id"], "claude-pane")
+
+    _run_hook("notify-waiting.sh", payload, os.environ.copy())
+
+    call = calls.read_text(encoding="utf-8")
+    unescaped = call.replace("\\", "")
+    assert ".Notify claude claude-question '' claude-pane waiting" in call
+    assert "permission" not in unescaped.split("waiting", 1)[1]
+    assert "Claude asks a question" in unescaped
+
+
+def test_permission_notification_names_the_tool_like_codex(tmp_path, monkeypatch):
+    calls = _hook_environment(tmp_path, monkeypatch)
+    payload = {
+        "hook_event_name": "Notification",
+        "session_id": "claude-permission-tool",
+        "cwd": "/workspaces/important-project",
+        "message": "Claude needs your permission to use Bash",
+    }
+    RuntimeState().record_pane("claude", payload["session_id"], "claude-pane")
+
+    _run_hook("notify-waiting.sh", payload, os.environ.copy())
+
+    call = calls.read_text(encoding="utf-8")
+    assert ".Notify claude claude-permission-tool '' claude-pane permission" in call
+    assert "Permission requested — Bash" in call.replace("\\", "")

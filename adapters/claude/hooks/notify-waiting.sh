@@ -63,8 +63,15 @@ case "$event" in
     ;;
   *)
     message=$(jq -r '.message // "Waiting for your input."' <<<"$input")
-    if printf '%s' "$message" | grep -qiE 'permission|approval|approve'; then
+    # Claude Code words every prompt as a permission request, including the
+    # question tool, where approve/deny would only pick the default answer.
+    tool=$(printf '%s' "$message" |
+      sed -nE 's/.*permission to use ([A-Za-z_][A-Za-z0-9_-]*).*/\1/p')
+    if [ "$tool" = "AskUserQuestion" ]; then
+      message="Claude asks a question — answer in the terminal."
+    elif printf '%s' "$message" | grep -qiE 'permission|approval|approve'; then
       kind="permission"
+      [ -n "$tool" ] && message="Permission requested — $tool"
     fi
     ;;
 esac
