@@ -16,14 +16,24 @@ def test_agent_sessions_are_isolated(tmp_path):
     assert state.read_pane("codex", "same") == "codex-pane"
 
 
-def test_session_title_marker_is_persisted_per_agent_session(tmp_path):
+def test_session_title_is_persisted_per_agent_session(tmp_path):
     state = RuntimeState(tmp_path)
 
-    assert state.title_was_set("codex", "s1") is False
-    state.record_title_set("codex", "s1")
+    assert state.read_title("codex", "s1") is None
+    state.record_title("codex", "s1", "Fix restored sessions")
 
-    assert state.title_was_set("codex", "s1") is True
-    assert state.title_was_set("codex", "s2") is False
+    assert state.read_title("codex", "s1") == "Fix restored sessions"
+    assert state.read_title("codex", "s2") is None
+
+
+def test_session_title_survives_a_new_runtime_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime-one"))
+    RuntimeState().record_title("codex", "old-session", "Historic task")
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime-two"))
+
+    assert RuntimeState().read_title("codex", "old-session") == "Historic task"
 
 
 def test_title_claim_is_atomic_and_can_be_released(tmp_path):

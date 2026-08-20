@@ -259,6 +259,78 @@ def test_session_start_falls_back_to_plugin_focused_pane(hook_environment):
     )
 
 
+def test_session_start_restores_saved_title_into_resumed_session_pane(hook_environment):
+    environment, calls_path = hook_environment
+    environment["TERMINATOR_UUID"] = "urn:uuid:resumed-pane"
+    RuntimeState().record_title("codex", "resumed-session", "Original task title")
+
+    result = _run_hook(
+        "session_start.py",
+        json.dumps({"session_id": "resumed-session"}),
+        environment,
+    )
+
+    assert result.returncode == 0
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        title_calls = [
+            values
+            for method, values in map(_method_values, _calls(calls_path))
+            if method.endswith(".SetPaneTitle")
+        ]
+        if title_calls:
+            break
+        time.sleep(0.01)
+    assert title_calls == [["urn:uuid:resumed-pane", "Original task title"]]
+
+
+def test_title_restore_keeps_the_pane_captured_by_each_session_start(hook_environment):
+    environment, calls_path = hook_environment
+    state = RuntimeState()
+    state.record_title("codex", "shared-session", "Shared historic title")
+    state.record_pane("codex", "shared-session", "pane-b")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(HOOKS / "session_start.py"),
+            "--restore-title",
+            "shared-session",
+            "pane-a",
+        ],
+        text=True,
+        env=environment,
+        check=False,
+        capture_output=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 0
+    title_calls = [
+        values
+        for method, values in map(_method_values, _calls(calls_path))
+        if method.endswith(".SetPaneTitle")
+    ]
+    assert title_calls == [["pane-a", "Shared historic title"]]
+
+
+def test_slow_title_restore_does_not_delay_session_start(hook_environment):
+    environment, _calls_path = hook_environment
+    environment["TERMINATOR_UUID"] = "resumed-pane"
+    environment["GDBUS_DELAY_SET_TITLE"] = "2"
+    RuntimeState().record_title("codex", "slow-resume", "Historic title")
+
+    started = time.monotonic()
+    result = _run_hook(
+        "session_start.py",
+        json.dumps({"session_id": "slow-resume"}),
+        environment,
+    )
+
+    assert result.returncode == 0
+    assert time.monotonic() - started < 1
+
+
 def test_stop_posts_completion_notification(hook_environment):
     environment, calls_path = hook_environment
     RuntimeState().record_pane("codex", "codex-session-4", "pane-4")
@@ -403,6 +475,9 @@ def test_first_codex_prompt_sets_a_short_local_pane_title_once(hook_environment)
     assert title_calls == [
         ["pane-title", "Corriger les notifications Terminator avec un titre vraiment…"]
     ]
+    assert RuntimeState().read_title("codex", "title-session") == (
+        "Corriger les notifications Terminator avec un titre vraiment…"
+    )
 
 
 def test_slow_title_update_does_not_delay_prompt_hook(hook_environment):

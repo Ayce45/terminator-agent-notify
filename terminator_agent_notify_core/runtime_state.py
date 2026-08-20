@@ -23,6 +23,7 @@ class RuntimeState:
     """Read and write private pane and decision state for supported agents."""
 
     def __init__(self, root: Path | None = None):
+        explicit_root = root is not None
         if root is None:
             runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
             root = (
@@ -32,6 +33,14 @@ class RuntimeState:
             )
         self.root = Path(root)
         self._ensure_directory(self.root)
+        if explicit_root:
+            self.title_root = self.root
+        else:
+            state_home = Path(
+                os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
+            )
+            self.title_root = state_home / "terminator-agent-notify"
+            self._ensure_directory(self.title_root)
 
     @staticmethod
     def _ensure_directory(path: Path) -> None:
@@ -91,7 +100,7 @@ class RuntimeState:
 
     def title_path(self, agent: str, session_id: str) -> Path:
         self._check_agent(agent)
-        directory = self.root / "titles" / _digest(agent)
+        directory = self.title_root / "titles" / _digest(agent)
         self._ensure_directory(directory)
         return directory / f"{_digest(session_id)}.title"
 
@@ -119,14 +128,18 @@ class RuntimeState:
         except FileNotFoundError:
             return None
 
-    def record_title_set(self, agent: str, session_id: str) -> None:
-        self._atomic_write(self.title_path(agent, session_id), "set")
+    def record_title(self, agent: str, session_id: str, title: str) -> None:
+        self._atomic_write(self.title_path(agent, session_id), title)
 
-    def title_was_set(self, agent: str, session_id: str) -> bool:
-        return self.title_path(agent, session_id).is_file()
+    def read_title(self, agent: str, session_id: str) -> str | None:
+        try:
+            title = self.title_path(agent, session_id).read_text(encoding="utf-8")
+        except (FileNotFoundError, UnicodeDecodeError):
+            return None
+        return title if title and title != "set" else None
 
     def claim_title(self, agent: str, session_id: str, title: str = "") -> bool:
-        if self.title_was_set(agent, session_id):
+        if self.read_title(agent, session_id) is not None:
             return False
         path = self.title_claim_path(agent, session_id)
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)

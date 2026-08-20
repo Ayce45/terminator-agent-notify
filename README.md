@@ -103,7 +103,10 @@ agent name; the Claude or Codex icon already identifies the application.
 Claude's own AI-generated terminal title is preserved. Codex has no equivalent
 title field, so its `UserPromptSubmit` hook derives a local, whitespace-normalized
 title from the first prompt (up to roughly 60 characters) and keeps it for the
-session. This does not call an AI service and never delays prompt submission.
+session. The title is stored privately and restored into the new pane when an
+existing session is opened with `codex resume`. Sessions created before title
+tracking receive a title from their first new prompt. This does not call an AI
+service and never delays prompt submission.
 
 Codex handles its native `PermissionRequest` hook as follows:
 

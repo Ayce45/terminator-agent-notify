@@ -38,7 +38,7 @@ def _set_claimed_title(session_id: str) -> int:
             return 1
         result = dbus_call("SetPaneTitle", pane, title)
         if result is not None and result.returncode == 0 and "true" in result.stdout:
-            state.record_title_set(AGENT, session_id)
+            state.record_title(AGENT, session_id, title)
             succeeded = True
     except OSError:
         pass
