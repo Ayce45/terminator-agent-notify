@@ -15,8 +15,8 @@ Approve and Deny actions.
 > Claude installation copies them to `~/.claude/assets/`; selective uninstall
 > intentionally retains those copied Claude assets, so remove them manually
 > only if you have confirmed nothing else uses them. `assets/codex.png` and
-> `assets/codex.svg` are original artwork for this project (a generic terminal
-> prompt, not OpenAI branding) and are covered by the MIT license.
+> `assets/codex.svg` are the OpenAI logo, OpenAI property, and are likewise
+> **not licensed under this repository's MIT license**.
 
 ## Requirements
 
