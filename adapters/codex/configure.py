@@ -124,6 +124,7 @@ def install(config_path: Path, install_root: Path) -> bool:
             "user-prompt-submit", hook_dir / "user_prompt_submit.py"
         ),
         "Stop": _entry("stop", hook_dir / "stop.py"),
+        "PreToolUse": _entry("pre-tool-use", hook_dir / "pre_tool_use.py"),
         "PermissionRequest": _entry(
             "permission-request",
             hook_dir / "permission_request.py",

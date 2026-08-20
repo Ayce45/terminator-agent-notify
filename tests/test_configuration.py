@@ -167,3 +167,17 @@ def test_uninstall_without_owned_hooks_is_byte_noop(tmp_path, agent, filename):
 
     assert config_path.read_bytes() == original
     assert list(tmp_path.glob(f"{filename}.bak.*")) == []
+
+
+def test_codex_install_wires_the_pre_tool_use_question_hook(tmp_path):
+    configure = load_configurator("codex")
+    config_path = tmp_path / "hooks.json"
+    config_path.write_text("{}", encoding="utf-8")
+
+    configure.install(config_path, tmp_path / "install-root")
+
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    entries = config["hooks"]["PreToolUse"]
+    assert entries[0]["description"] == "terminator-agent-notify:codex:pre-tool-use"
+    command = entries[0]["hooks"][0]["command"]
+    assert command.endswith("adapters/codex/hooks/pre_tool_use.py")

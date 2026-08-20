@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from adapters.codex.common import (
+    fallback_notification,
     AGENT,
     RuntimeState,
     dismiss_request,
@@ -104,6 +105,9 @@ def run() -> dict | None:
             body,
         )
         if not registered:
+            # Without the plugin there is nothing actionable, but the user
+            # still deserves to know Codex is waiting in the terminal.
+            fallback_notification(title, f"{body}\nAnswer in the terminal.")
             return None
 
         if state is None:

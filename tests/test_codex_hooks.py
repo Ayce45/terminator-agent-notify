@@ -705,3 +705,68 @@ def test_repeated_signals_during_registration_still_cleanup_exact_request(
         values for method, values in calls if method.endswith(".DismissRequest")
     )
     assert dismiss == notify[:3]
+
+
+def _recording_notify_send(calls_path, environment):
+    fallback = calls_path.parent / "notify-send.calls"
+    notify_send = calls_path.parent / "notify-send"
+    notify_send.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$NOTIFY_SEND_CALLS"\n',
+        encoding="utf-8",
+    )
+    notify_send.chmod(0o755)
+    environment["NOTIFY_SEND_CALLS"] = str(fallback)
+    return fallback
+
+
+def test_permission_falls_back_to_plain_notification_when_plugin_unreachable(
+    hook_environment,
+):
+    environment, calls_path = hook_environment
+    environment["GDBUS_FAIL_NOTIFY"] = "1"
+    fallback = _recording_notify_send(calls_path, environment)
+
+    assert _run_permission(environment) is None
+
+    recorded = fallback.read_text(encoding="utf-8")
+    assert "Codex permission — Bash" in recorded
+    assert "Answer in the terminal." in recorded
+
+
+def test_pre_tool_use_notifies_for_request_user_input(hook_environment):
+    environment, calls_path = hook_environment
+    event = {
+        "session_id": "codex-session-q",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "request_user_input",
+        "cwd": "/work/project",
+    }
+
+    result = _run_hook("pre_tool_use.py", json.dumps(event), environment)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    calls = [
+        call
+        for call in _calls(calls_path)
+        if any(str(part).endswith(".Notify") for part in call)
+    ]
+    assert len(calls) == 1
+    assert "waiting" in calls[0]
+    assert "question" in " ".join(calls[0]).lower()
+
+
+def test_pre_tool_use_ignores_other_tools(hook_environment):
+    environment, calls_path = hook_environment
+    event = {
+        "session_id": "codex-session-q",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls"},
+    }
+
+    result = _run_hook("pre_tool_use.py", json.dumps(event), environment)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert _calls(calls_path) == []

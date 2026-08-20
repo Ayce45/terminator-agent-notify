@@ -91,11 +91,11 @@ def notify(
     ):
         return True
     if fallback:
-        _fallback_notification(title, body)
+        fallback_notification(title, body)
     return False
 
 
-def _fallback_notification(title: str, body: str) -> None:
+def fallback_notification(title: str, body: str) -> None:
     if shutil.which("notify-send") is None:
         return
     command = ["notify-send", "--app-name=Codex"]
