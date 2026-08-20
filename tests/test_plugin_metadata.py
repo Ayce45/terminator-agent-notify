@@ -198,6 +198,17 @@ def test_focus_cleanup_leaves_other_panes_untouched(tmp_path):
     assert state.consume_request_closed("codex", "s1", "r1") is False
 
 
+def test_notifications_carry_the_agent_icon(tmp_path):
+    service, notifications, _state = make_service(tmp_path)
+
+    service.notify("claude", "s1", "", "pane", "complete", PAYLOAD)
+    service.notify("codex", "s2", "", "pane", "complete", PAYLOAD)
+
+    icons = [arguments[2] for arguments in notifications.created]
+    assert icons[0].endswith("assets/claude.png")
+    assert icons[1].endswith("assets/codex.png")
+
+
 def test_codex_permission_requires_session_and_request_ids(tmp_path):
     service, notifications, _state = make_service(tmp_path)
 

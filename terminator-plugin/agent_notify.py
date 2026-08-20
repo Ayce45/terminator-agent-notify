@@ -67,7 +67,11 @@ DBUS_BUS = "org.freedesktop.DBus"
 DBUS_PATH = "/org/freedesktop/DBus"
 KEY_APPROVE = "\r"
 KEY_DENY = "\x1b"
-ICON_PATH = str(Path(__file__).resolve().parent.parent / "assets" / "claude.png")
+ICON_DIR = Path(__file__).resolve().parent.parent / "assets"
+ICON_PATHS = {
+    "claude": str(ICON_DIR / "claude.png"),
+    "codex": str(ICON_DIR / "codex.png"),
+}
 
 
 def _env_enabled(name, default=True):
@@ -411,7 +415,7 @@ class FocusService(dbus.service.Object):
             actions = ["approve", "Approve", "deny", "Deny"] + actions
         hints = {"urgency": dbus.Byte(1)}
         application = "Claude Code" if agent == "claude" else "Codex"
-        icon = ICON_PATH if agent == "claude" else ""
+        icon = ICON_PATHS.get(agent, "")
         try:
             notification_id = int(
                 self._notifs.Notify(

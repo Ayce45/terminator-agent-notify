@@ -93,7 +93,7 @@ if [ "$notify" -eq 1 ] && [ "$notifications_enabled" != "0" ]; then
 import json
 import sys
 
-print(json.dumps({"title": "Codex — relancé automatiquement", "body": f"« {sys.argv[1]} » envoyé après la fin de la limite."}))
+print(json.dumps({"title": "Codex — resumed automatically", "body": f"\"{sys.argv[1]}\" sent after the usage limit reset."}))
 PY
 )
   notify_reply=$(gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
@@ -101,11 +101,13 @@ PY
       2>/dev/null || true)
   if ! [[ "$notify_reply" =~ ^\(uint32[[:space:]]+[1-9][0-9]*,\)$ ]]; then
     notify_args=(--app-name="Codex")
+    codex_icon="${XDG_CONFIG_HOME:-$HOME/.config}/terminator/assets/codex.png"
+    [ -f "$codex_icon" ] && notify_args+=(--icon="$codex_icon")
     if [ -n "$notification_expiry_ms" ]; then
       notify_args+=(--expire-time="$notification_expiry_ms")
     fi
     command -v notify-send >/dev/null 2>&1 && \
-      notify-send "${notify_args[@]}" "Codex — relancé automatiquement" \
-        "« ${message} » envoyé après la fin de la limite." >/dev/null 2>&1 || true
+      notify-send "${notify_args[@]}" "Codex — resumed automatically" \
+        "\"${message}\" sent after the usage limit reset." >/dev/null 2>&1 || true
   fi
 fi

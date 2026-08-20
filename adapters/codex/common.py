@@ -99,6 +99,14 @@ def _fallback_notification(title: str, body: str) -> None:
     if shutil.which("notify-send") is None:
         return
     command = ["notify-send", "--app-name=Codex"]
+    icon = (
+        Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        / "terminator"
+        / "assets"
+        / "codex.png"
+    )
+    if icon.is_file():
+        command.append(f"--icon={icon}")
     expiry = _environment_value("TERMINATOR_AGENT_NOTIFY_EXPIRY_MS")
     if expiry:
         command.append(f"--expire-time={expiry}")

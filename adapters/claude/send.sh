@@ -129,7 +129,7 @@ if [ "$notify" -eq 1 ] && [ "$notifications_enabled" != "0" ]; then
 import json
 import sys
 
-print(json.dumps({"title": "Claude Code — relancé automatiquement", "body": f"« {sys.argv[1]} » envoyé après la fin de la limite."}))
+print(json.dumps({"title": "Claude Code — resumed automatically", "body": f"\"{sys.argv[1]}\" sent after the usage limit reset."}))
 PY
 )
   notify_reply=$(timeout "${COMMAND_TIMEOUT_SECONDS}s" \
@@ -144,7 +144,7 @@ PY
     command -v notify-send >/dev/null 2>&1 && \
       timeout "${COMMAND_TIMEOUT_SECONDS}s" \
         notify-send "${notify_args[@]}" \
-        "Claude Code — relancé automatiquement" \
-        "« ${message} » envoyé après la fin de la limite." >/dev/null 2>&1 || true
+        "Claude Code — resumed automatically" \
+        "\"${message}\" sent after the usage limit reset." >/dev/null 2>&1 || true
   fi
 fi
