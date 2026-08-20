@@ -22,6 +22,7 @@ ENV_FILE="$STATE_DIR/environment"
 MANAGED_FILES="$STATE_DIR/managed-files.json"
 XWAYLAND_OWNED="$STATE_DIR/xwayland-owned"
 XWAYLAND_DESKTOP_SNAPSHOT="$STATE_DIR/xwayland-owned.desktop"
+PLUGIN_ACTIVATION_OWNED="$STATE_DIR/plugin-activation-owned"
 TERMINATOR_ROOT="$XDG_CONFIG_HOME/terminator"
 SYSTEMD_USER="$XDG_CONFIG_HOME/systemd/user"
 UNIT_PREFIX="terminator-agent-notify"
@@ -228,6 +229,10 @@ fi
 
 reconcile_state
 
+python3 "$SRC_DIR/scripts/activate-plugin.py" install \
+  --config "$TERMINATOR_ROOT/config" --owned "$PLUGIN_ACTIVATION_OWNED" || \
+  warn "Automatic plugin activation failed; enable AgentNotify manually."
+
 # Keep the established opt-in behavior for reliable cross-window focus on Wayland.
 if [ "${XDG_SESSION_TYPE:-}" = wayland ]; then
   do_xwayland=${FORCE_XWAYLAND:-}
@@ -257,4 +262,8 @@ fi
 if selected codex; then
   echo "Codex hooks installed. Start Codex and review and trust the new hooks when prompted."
 fi
-say "Installation complete. Restart Terminator and enable AgentNotify in Preferences if needed."
+if [ -f "$PLUGIN_ACTIVATION_OWNED" ]; then
+  say "Installation complete. Restart Terminator to load AgentNotify."
+else
+  say "Installation complete. Restart Terminator and enable AgentNotify in Preferences if needed."
+fi

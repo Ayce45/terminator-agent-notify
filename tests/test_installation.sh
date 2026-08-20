@@ -86,6 +86,10 @@ fi
 test ! -e "$XDG_DATA_HOME/terminator-agent-notify"
 test ! -e "$XDG_STATE_HOME/terminator-agent-notify"
 
+mkdir -p "$XDG_CONFIG_HOME/terminator"
+printf '[global_config]\n  enabled_plugins = LaunchpadBugURLHandler, APTURLHandler\n' \
+  > "$XDG_CONFIG_HOME/terminator/config"
+
 install_output=$($ROOT/install.sh both)
 case "$install_output" in
   *"review and trust"*) ;;
@@ -95,6 +99,9 @@ esac
 test -f "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
 test -f "$XDG_CONFIG_HOME/terminator/terminator_agent_notify_core/runtime_state.py"
 test ! -e "$XDG_CONFIG_HOME/terminator/core"
+grep -qx '  enabled_plugins = LaunchpadBugURLHandler, APTURLHandler, AgentNotify' \
+  "$XDG_CONFIG_HOME/terminator/config"
+test -f "$XDG_STATE_HOME/terminator-agent-notify/plugin-activation-owned"
 test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/__init__.py"
 test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude/autoresume.py"
 test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex/hooks/stop.py"
@@ -159,9 +166,9 @@ test -f "$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-codex-limit-polle
 test -f "$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-codex-limit-poller.timer"
 test ! -e "$XDG_CONFIG_HOME/systemd/user/claude-limit-poller.service"
 test ! -e "$XDG_CONFIG_HOME/systemd/user/codex-limit-poller.service"
-grep -Fq "EnvironmentFile=\"$ENV_FILE\"" \
+grep -Fq "EnvironmentFile=$ENV_FILE" \
   "$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-claude-limit-poller.service"
-grep -Fq "EnvironmentFile=\"$ENV_FILE\"" \
+grep -Fq "EnvironmentFile=$ENV_FILE" \
   "$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-codex-limit-poller.service"
 if grep -q '^Environment=CODEX_AUTORESUME=1$' \
     "$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-codex-limit-poller.service"; then
@@ -227,6 +234,9 @@ test -f "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
 grep -qx codex "$XDG_STATE_HOME/terminator-agent-notify/installed-adapters"
 
 $ROOT/uninstall.sh codex >/dev/null
+grep -qx '  enabled_plugins = LaunchpadBugURLHandler, APTURLHandler' \
+  "$XDG_CONFIG_HOME/terminator/config"
+test ! -e "$XDG_STATE_HOME/terminator-agent-notify/plugin-activation-owned"
 test ! -e "$XDG_CONFIG_HOME/terminator/plugins/agent_notify.py"
 test ! -e "$XDG_CONFIG_HOME/terminator/terminator_agent_notify_core/runtime_state.py"
 test ! -e "$XDG_CONFIG_HOME/terminator/terminator_agent_notify_core"
@@ -284,7 +294,7 @@ expected = (
 lines = open(unit_path, encoding="utf-8").read().splitlines()
 assert expected in lines, (expected, lines)
 environment_file = f'{test_root}/special state/terminator-agent-notify/environment'
-assert f'EnvironmentFile="{environment_file}"' in lines, lines
+assert f'EnvironmentFile={environment_file}' in lines, lines
 assert not list(__import__("pathlib").Path(unit_path).parent.glob(".*.tmp"))
 PY
 "$ROOT/uninstall.sh" claude >/dev/null

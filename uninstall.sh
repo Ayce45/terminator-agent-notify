@@ -22,6 +22,7 @@ ENV_FILE="$STATE_DIR/environment"
 MANAGED_FILES="$STATE_DIR/managed-files.json"
 XWAYLAND_OWNED="$STATE_DIR/xwayland-owned"
 XWAYLAND_DESKTOP_SNAPSHOT="$STATE_DIR/xwayland-owned.desktop"
+PLUGIN_ACTIVATION_OWNED="$STATE_DIR/plugin-activation-owned"
 TERMINATOR_ROOT="$XDG_CONFIG_HOME/terminator"
 SYSTEMD_USER="$XDG_CONFIG_HOME/systemd/user"
 UNIT_PREFIX="terminator-agent-notify"
@@ -135,6 +136,9 @@ fi
 
 reconcile_state
 if [ "${#active_agents[@]}" -eq 0 ]; then
+  python3 "$SRC_DIR/scripts/activate-plugin.py" uninstall \
+    --config "$TERMINATOR_ROOT/config" --owned "$PLUGIN_ACTIVATION_OWNED" || \
+    warn "Could not remove the owned AgentNotify entry; disable it manually."
   if [ -f "$MANAGED_FILES" ]; then
     python3 "$SRC_DIR/scripts/manage-install-files.py" remove --shared \
       --source "$SRC_DIR" --manifest "$MANAGED_FILES" \
