@@ -3,5 +3,5 @@ Description=Scan Codex transcripts for unambiguous usage-limit resets
 
 [Service]
 Type=oneshot
-EnvironmentFile="@ENV_FILE@"
+EnvironmentFile=@ENV_FILE@
 ExecStart=/usr/bin/env python3 "@INSTALL_ROOT@/adapters/codex/autoresume.py" --scan
