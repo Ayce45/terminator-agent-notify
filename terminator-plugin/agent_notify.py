@@ -168,7 +168,10 @@ def _find_notebook(terminal):
     widget = terminal
     parent = terminal.get_parent()
     while parent is not None:
-        if isinstance(parent, Gtk.Notebook):
+        if isinstance(parent, Gtk.Notebook) or all(
+            callable(getattr(parent, method, None))
+            for method in ("page_num", "set_current_page", "get_n_pages")
+        ):
             return parent, widget
         widget = parent
         parent = parent.get_parent()
@@ -406,6 +409,22 @@ class FocusService(dbus.service.Object):
                 not session_id or not request_id
             ):
                 raise ValueError("Codex permission requires session and request ids")
+            terminal = _find_terminal(pane_uuid)
+            if terminal is not None:
+                try:
+                    pane_title = str(terminal.titlebar.get_custom_string() or "").strip()
+                except Exception:
+                    pane_title = ""
+                if not pane_title:
+                    try:
+                        pane_title = str(terminal.get_window_title() or "").strip()
+                    except Exception:
+                        pane_title = ""
+                if pane_title:
+                    title = "%s — %s" % (
+                        "Claude Code" if agent == "claude" else "Codex",
+                        pane_title,
+                    )
         except (TypeError, ValueError, json.JSONDecodeError) as exception:
             _log("Notify: invalid request: %s" % exception)
             return 0
@@ -525,15 +544,9 @@ class FocusService(dbus.service.Object):
             return
         agent, session_id, request_id, pane_uuid, kind = metadata[:5]
         if kind == "permission" and action_key in {"approve", "deny"}:
-            if agent == "claude":
-                self._send_keys(pane_uuid, KEY_APPROVE if action_key == "approve" else KEY_DENY)
-            else:
-                self._state.write_decision(
-                    agent,
-                    session_id,
-                    request_id,
-                    "allow" if action_key == "approve" else "deny",
-                )
+            self._send_keys(
+                pane_uuid, KEY_APPROVE if action_key == "approve" else KEY_DENY
+            )
             self._close_and_untrack(notification_id, request_closed=False)
         else:
             self._close_and_untrack(notification_id)
@@ -654,12 +667,23 @@ class AgentNotify(Plugin):
                     continue
                 current_vtes.add(vte)
                 if vte not in self._focus_handlers:
-                    try:
-                        self._focus_handlers[vte] = vte.connect(
-                            "focus-in-event", self._on_focus_in
-                        )
-                    except Exception as exception:
-                        err("AgentNotify: cannot connect VTE focus handler: %s" % exception)
+                    handler_ids = []
+                    for signal_name in (
+                        "focus-in-event",
+                        "button-press-event",
+                        "key-press-event",
+                    ):
+                        try:
+                            handler_ids.append(
+                                vte.connect(signal_name, self._on_pane_interaction)
+                            )
+                        except Exception as exception:
+                            err(
+                                "AgentNotify: cannot connect VTE %s handler: %s"
+                                % (signal_name, exception)
+                            )
+                    if handler_ids:
+                        self._focus_handlers[vte] = tuple(handler_ids)
             for vte in list(self._focus_handlers):
                 if vte not in current_vtes:
                     del self._focus_handlers[vte]
@@ -667,7 +691,7 @@ class AgentNotify(Plugin):
             err("AgentNotify._reconcile_handlers failed: %s" % exception)
         return True
 
-    def _on_focus_in(self, vte, _event):
+    def _on_pane_interaction(self, vte, _event):
         if self.service is None:
             return False
         try:
@@ -676,7 +700,7 @@ class AgentNotify(Plugin):
                     self.service.dismiss_pane(terminal.uuid)
                     break
         except Exception as exception:
-            err("AgentNotify._on_focus_in cleanup failed: %s" % exception)
+            err("AgentNotify._on_pane_interaction cleanup failed: %s" % exception)
         return False
 
     def _trusted_notification_sender(self, sender):
@@ -741,11 +765,12 @@ class AgentNotify(Plugin):
             except Exception:
                 pass
             self._reconcile_id = None
-        for vte, handler_id in list(self._focus_handlers.items()):
-            try:
-                vte.disconnect(handler_id)
-            except Exception:
-                pass
+        for vte, handler_ids in list(self._focus_handlers.items()):
+            for handler_id in handler_ids:
+                try:
+                    vte.disconnect(handler_id)
+                except Exception:
+                    pass
         self._focus_handlers.clear()
         try:
             if self.service is not None:

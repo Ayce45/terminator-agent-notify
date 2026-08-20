@@ -46,9 +46,11 @@ release record; redact session IDs, paths, and command arguments when needed.
   requests and confirm Codex receives the expected allow/deny outcome.
   Evidence: screenshots of actions, terminal results, and request-specific log
   lines (redact request IDs).
-- [ ] Close/expire a `PermissionRequest` and wait for the timeout fallback.
-  Confirm Codex presents its normal interactive approval UI, not an implicit
-  approval or denial.
+- [ ] Trigger a `PermissionRequest` and confirm Codex presents its normal
+  interactive approval UI immediately while the notification remains visible.
+  Answer once in the terminal and once through each notification button.
+- [ ] Close/expire a `PermissionRequest`. Confirm the terminal prompt remains
+  available and no implicit approval or denial occurs.
   Evidence: terminal screenshot and log/journal excerpt.
 - [ ] With `CODEX_AUTORESUME=1 ./install.sh codex`, use a safe test account or
   fixture-shaped recent session to verify an unambiguous usage-limit reset is

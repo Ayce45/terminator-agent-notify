@@ -31,6 +31,10 @@ SCHEDULER_TIMEOUT_SECONDS = 5
 _POSITIVE_NOTIFICATION_REPLY = re.compile(rb"^\(uint32[ \t]+[1-9][0-9]*,\)$")
 
 
+def _gvariant_text(value):
+    return value.replace("\\", "\\\\")
+
+
 def _texts(value, output):
     if isinstance(value, dict):
         if isinstance(value.get("text"), str):
@@ -82,14 +86,14 @@ def _notify(session_id, title, body):
     if os.environ.get("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", "1") == "0":
         return
     pane = RuntimeState().read_pane("claude", session_id) or ""
-    payload = json.dumps({"title": title, "body": body})
+    payload = json.dumps({"title": title, "body": body}, ensure_ascii=False)
     try:
         response = subprocess.run(
             [
                 "gdbus", "call", "--session", "--dest", "io.github.TerminatorAgentNotify",
                 "--object-path", "/io/github/TerminatorAgentNotify",
                 "--method", "io.github.TerminatorAgentNotify.Notify", "claude", session_id,
-                "", pane, "waiting", payload,
+                "", pane, "waiting", _gvariant_text(payload),
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -102,7 +106,11 @@ def _notify(session_id, title, body):
             return
     except (OSError, subprocess.SubprocessError):
         pass
-    command = ["notify-send", "--app-name=Claude Code"]
+    command = [
+        "notify-send",
+        "--app-name=Claude Code",
+        f"--icon={Path.home() / '.claude' / 'assets' / 'claude.png'}",
+    ]
     expiry = os.environ.get("TERMINATOR_AGENT_NOTIFY_EXPIRY_MS")
     if expiry:
         command.append(f"--expire-time={expiry}")

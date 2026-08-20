@@ -34,7 +34,7 @@ def test_readme_documents_installation_security_and_migration_contract():
         "TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS",
         "TERMINATOR_AGENT_NOTIFY_EXPIRY_MS",
         "TERMINATOR_AGENT_NOTIFY_LOG_LEVEL",
-        "maximum is 300 seconds",
+        "returns immediately without a",
         "terminator-agent-notify-codex-limit-poller.timer",
         "terminator-agent-notify-claude-limit-poller.timer",
         "rotating generation token",

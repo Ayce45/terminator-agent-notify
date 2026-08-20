@@ -15,18 +15,10 @@ from pathlib import Path
 
 
 MARKER = "terminator-agent-notify:"
-# PermissionRequest performs one bounded D-Bus registration call before waiting
-# and one bounded dismissal call during cleanup.  Keep the Codex host deadline
-# strictly beyond both calls, the maximum local wait, and explicit cleanup time.
-MAX_APPROVAL_WAIT_SECONDS = 300
+# PermissionRequest performs one bounded D-Bus registration call and returns
+# immediately so Codex can display its native terminal prompt.
 DBUS_CALL_BUDGET_SECONDS = 5
-APPROVAL_CLEANUP_MARGIN_SECONDS = 5
-PERMISSION_HOOK_TIMEOUT = (
-    MAX_APPROVAL_WAIT_SECONDS
-    + 2 * DBUS_CALL_BUDGET_SECONDS
-    + APPROVAL_CLEANUP_MARGIN_SECONDS
-    + 1
-)
+PERMISSION_HOOK_TIMEOUT = DBUS_CALL_BUDGET_SECONDS + 1
 
 
 def _owned(entry: object) -> bool:

@@ -76,6 +76,9 @@ case "$event" in
     ;;
 esac
 payload=$(jq -cn --arg title "$title" --arg body "$message" '{title: $title, body: $body}')
+# gdbus parses each CLI argument as GVariant text. Preserve JSON's escape
+# sequences so \n and similar sequences reach the plugin as valid JSON.
+payload=${payload//\\/\\\\}
 
 if command -v gdbus >/dev/null 2>&1; then
   if response=$(timeout "${COMMAND_TIMEOUT_SECONDS}s" \

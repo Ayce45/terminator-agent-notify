@@ -100,18 +100,15 @@ is unavailable, hooks do not block the agent: completion notifications may use
 
 Codex handles its native `PermissionRequest` hook as follows:
 
-- Approve emits Codex's `allow` hook response; Deny emits `deny`.
-- The default wait is `CODEX_NOTIFY_APPROVAL_TIMEOUT=300` seconds. Invalid,
-  negative, or non-finite values fall back to 300; `0` declines to wait, and
-  the maximum is 300 seconds even when a larger value is configured. The
-  installed Codex host timeout is 316 seconds, leaving two five-second D-Bus
-  budgets, a five-second cleanup margin, and one additional second beyond the
-  maximum approval wait.
-- A notification close, expiry, service failure, timeout, interrupt, or stale
-  action returns no decision, so Codex falls back to its normal interactive
-  approval flow. Those cases never imply approval or denial.
-- Decisions are private, atomic, single-use files keyed by agent, session, and
-  request ID; a decision for another request cannot authorize the current one.
+- The hook registers the notification and returns immediately without a
+  decision, so Codex's native terminal approval prompt is never held behind a
+  notification wait.
+- Approve sends Enter and Deny sends Escape to the exact originating pane. The
+  terminal prompt remains the source of truth and can always be answered
+  directly.
+- A pane focus, mouse click, or key press dismisses that pane's notifications.
+  A notification close, expiry, service failure, or stale action never implies
+  approval or denial.
 
 Generic notification and auto-resume values are captured by `install.sh` in the
 private `${XDG_STATE_HOME:-~/.local/state}/terminator-agent-notify/environment`
@@ -132,7 +129,6 @@ Codex approval timeout are read directly from the agent process environment:
 | `CLAUDE_AUTORESUME_ARM_NOTIFY` | `1` | Set `0` to suppress the Claude “resume armed” notification. |
 | `CODEX_AUTORESUME` | disabled | Codex resume is experimental and only runs when exactly `1`. |
 | `CODEX_AUTORESUME_MESSAGE` | `continue` | Message sent after an eligible Codex reset. |
-| `CODEX_NOTIFY_APPROVAL_TIMEOUT` | `300` | Seconds to wait for a Codex notification decision. |
 | `FORCE_XWAYLAND` | unset | Set to `1` during Wayland installation to opt in to owned XWayland launch setup. |
 
 The installer also follows the standard XDG location variables. If they are
@@ -179,7 +175,7 @@ The Terminator plugin appends to the private `plugin.log` location described
 above; adapter auto-resume diagnostics go to the invoked service or command's
 stderr (for example, `journalctl --user -u
 terminator-agent-notify-codex-limit-poller.service`). Runtime pane mappings,
-pending decisions, closure state, and resume de-duplication markers are private
+closure state and resume de-duplication markers are private
 (`0700` directories and `0600` files) below
 `${XDG_RUNTIME_DIR}/terminator-agent-notify`, or
 `/tmp/terminator-agent-notify-<uid>` when `XDG_RUNTIME_DIR` is absent.

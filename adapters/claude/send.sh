@@ -129,9 +129,13 @@ if [ "$notify" -eq 1 ] && [ "$notifications_enabled" != "0" ]; then
 import json
 import sys
 
-print(json.dumps({"title": "Claude Code — resumed automatically", "body": f"\"{sys.argv[1]}\" sent after the usage limit reset."}))
+print(json.dumps(
+    {"title": "Claude Code — resumed automatically", "body": f"\"{sys.argv[1]}\" sent after the usage limit reset."},
+    ensure_ascii=False,
+))
 PY
 )
+  payload=${payload//\\/\\\\}
   notify_reply=$(timeout "${COMMAND_TIMEOUT_SECONDS}s" \
     gdbus call --session --dest "$BUS" --object-path "$PATH_NAME" \
       --method "${BUS}.Notify" "claude" "$session" "" "$pane" "waiting" "$payload" \

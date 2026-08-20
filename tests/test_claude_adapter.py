@@ -836,6 +836,35 @@ def test_question_notification_is_not_treated_as_a_permission(tmp_path, monkeypa
     assert "Claude asks a question" in unescaped
 
 
+def test_multiline_notification_escapes_gvariant_control_sequences(tmp_path, monkeypatch):
+    calls = _hook_environment(tmp_path, monkeypatch)
+    payload = {
+        "hook_event_name": "Notification",
+        "session_id": "claude-multiline",
+        "message": "First line\nSecond line",
+    }
+
+    _run_hook("notify-waiting.sh", payload, os.environ.copy())
+
+    assert r"First\ line\\\\nSecond\ line" in calls.read_text(encoding="utf-8")
+
+
+def test_autoresume_fallback_keeps_claude_icon(tmp_path, monkeypatch):
+    module = _load_autoresume()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    calls = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=1, stdout=b"")
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+
+    module._notify("missing-plugin", "Resume armed", "Scheduled")
+
+    assert f"--icon={Path.home()}/.claude/assets/claude.png" in calls[1]
+
+
 def test_permission_notification_names_the_tool_like_codex(tmp_path, monkeypatch):
     calls = _hook_environment(tmp_path, monkeypatch)
     payload = {

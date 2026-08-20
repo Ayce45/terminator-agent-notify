@@ -90,8 +90,8 @@ def test_uninstall_removes_only_owned_entries(tmp_path, agent, filename):
     )
 
 
-def test_codex_permission_hook_leaves_cleanup_margin_after_maximum_wait(tmp_path):
-    """A host deadline must cover registration, waiting, cleanup, and real margin."""
+def test_codex_permission_hook_timeout_only_covers_notification_registration(tmp_path):
+    """The hook deadline must not encode a user-decision wait."""
     configure = load_configurator("codex")
     config_path = tmp_path / "hooks.json"
 
@@ -105,13 +105,7 @@ def test_codex_permission_hook_leaves_cleanup_margin_after_maximum_wait(tmp_path
     ]
     assert len(owned) == 1
     host_timeout = owned[0]["hooks"][0]["timeout"]
-    required_runtime = (
-        configure.MAX_APPROVAL_WAIT_SECONDS
-        + 2 * configure.DBUS_CALL_BUDGET_SECONDS
-        + configure.APPROVAL_CLEANUP_MARGIN_SECONDS
-    )
-    assert configure.MAX_APPROVAL_WAIT_SECONDS <= 300
-    assert host_timeout > required_runtime
+    assert configure.DBUS_CALL_BUDGET_SECONDS < host_timeout <= 15
 
 
 @pytest.mark.parametrize(

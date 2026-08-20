@@ -42,6 +42,11 @@ def text_field(event: dict[str, Any], name: str) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def gvariant_text(value: str) -> str:
+    """Keep backslash escapes intact through gdbus' GVariant parser."""
+    return value.replace("\\", "\\\\")
+
+
 def dbus_call(method: str, *arguments: str) -> subprocess.CompletedProcess[str] | None:
     """Make a bounded, quiet call to the shared Terminator service."""
     try:
@@ -80,9 +85,9 @@ def notify(
 ) -> bool:
     if not notifications_enabled():
         return False
-    payload = json.dumps({"title": title, "body": body})
+    payload = json.dumps({"title": title, "body": body}, ensure_ascii=False)
     result = dbus_call(
-        "Notify", AGENT, session_id, request_id, pane, kind, payload
+        "Notify", AGENT, session_id, request_id, pane, kind, gvariant_text(payload)
     )
     if (
         result is not None
