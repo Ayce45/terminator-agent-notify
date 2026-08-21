@@ -463,21 +463,23 @@ def test_first_codex_prompt_sets_a_short_local_pane_title_once(hook_environment)
 
     assert first.returncode == second.returncode == 0
     deadline = time.monotonic() + 2
+    expected_title = "Corriger les notifications Terminator avec un titre vraiment…"
     while time.monotonic() < deadline:
-        if any(
+        title_call_recorded = any(
             method.endswith(".SetPaneTitle")
             for method, _values in map(_method_values, _calls(calls_path))
-        ):
+        )
+        if title_call_recorded and RuntimeState().read_title(
+            "codex", "title-session"
+        ) == expected_title:
             break
         time.sleep(0.01)
     calls = [_method_values(call) for call in _calls(calls_path)]
     title_calls = [values for method, values in calls if method.endswith(".SetPaneTitle")]
     assert title_calls == [
-        ["pane-title", "Corriger les notifications Terminator avec un titre vraiment…"]
+        ["pane-title", expected_title]
     ]
-    assert RuntimeState().read_title("codex", "title-session") == (
-        "Corriger les notifications Terminator avec un titre vraiment…"
-    )
+    assert RuntimeState().read_title("codex", "title-session") == expected_title
 
 
 def test_slow_title_update_does_not_delay_prompt_hook(hook_environment):
