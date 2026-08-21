@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import sys
 import time
@@ -72,6 +73,7 @@ ICON_PATHS = {
     "claude": str(ICON_DIR / "claude.png"),
     "codex": str(ICON_DIR / "codex-mark.png"),
 }
+CLAUDE_TITLE_STATUS = re.compile(r"^[◐◓◑◒✻✽✢✳✶*·]+\s+")
 
 
 def _env_enabled(name, default=True):
@@ -152,6 +154,13 @@ def _normalize(uuid):
     if uuid is None:
         return ""
     return str(uuid).replace("urn:uuid:", "").strip().lower()
+
+
+def _notification_title(agent, title):
+    title = str(title).strip()
+    if agent == "claude":
+        title = CLAUDE_TITLE_STATUS.sub("", title, count=1).strip()
+    return title
 
 
 def _find_terminal(uuid):
@@ -435,7 +444,7 @@ class FocusService(dbus.service.Object):
                     except Exception:
                         pane_title = ""
                 if pane_title:
-                    title = pane_title
+                    title = _notification_title(agent, pane_title)
         except (TypeError, ValueError, json.JSONDecodeError) as exception:
             _log("Notify: invalid request: %s" % exception)
             return 0

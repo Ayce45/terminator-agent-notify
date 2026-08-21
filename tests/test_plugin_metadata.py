@@ -275,6 +275,25 @@ def test_notification_uses_dynamic_terminal_title_when_no_custom_title(tmp_path,
     assert notifications.created[0][3] == "jira-run-bugs-automation"
 
 
+def test_claude_notification_removes_leading_status_glyph_from_pane_title(
+    tmp_path, monkeypatch
+):
+    service, notifications, _state = make_service(tmp_path)
+    terminal = SimpleNamespace(
+        uuid="urn:uuid:pane",
+        titlebar=SimpleNamespace(get_custom_string=lambda: "◐ Question à choix multiple"),
+    )
+    monkeypatch.setitem(
+        service.notify.__globals__,
+        "Terminator",
+        lambda: SimpleNamespace(terminals=[terminal]),
+    )
+
+    service.notify("claude", "s1", "", "pane", "waiting", PAYLOAD)
+
+    assert notifications.created[0][3] == "Question à choix multiple"
+
+
 def test_set_pane_title_updates_only_the_exact_terminal(tmp_path, monkeypatch):
     service, _notifications, _state = make_service(tmp_path)
     titles = {"pane-a": [], "pane-b": []}
