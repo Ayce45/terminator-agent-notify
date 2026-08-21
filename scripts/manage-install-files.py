@@ -125,15 +125,14 @@ def _candidates(arguments: argparse.Namespace) -> dict[Path, Candidate]:
         arguments.terminator_root / "assets",
         "shared",
     )
+    candidates[arguments.install_root / "adapters" / "__init__.py"] = (
+        _candidate_from_file(source / "adapters" / "__init__.py", "shared")
+    )
 
     escaped_root = _systemd_escape(arguments.install_root)
     escaped_environment = _systemd_escape(arguments.environment_file)
     for agent in arguments.agents:
         scope = f"agent:{agent}"
-        if agent == "codex":
-            candidates[arguments.install_root / "adapters" / "__init__.py"] = (
-                _candidate_from_file(source / "adapters" / "__init__.py", scope)
-            )
         _add_tree(
             candidates,
             source / "adapters" / agent,

@@ -30,6 +30,12 @@ release record; redact session IDs, paths, and command arguments when needed.
 - [ ] Approve and deny a Claude permission notification; confirm Enter and
   Escape respectively reach only the originating Claude pane.
   Evidence: terminal result and action log lines.
+- [ ] Trigger Claude `AskUserQuestion`. Confirm the notification says Claude
+  asks a question, has no Approve/Deny actions, and clicking it focuses the
+  exact pane. Then trigger a Bash permission and confirm it uses the same
+  title/body/action structure as the Codex permission notification.
+  Evidence: side-by-side screenshots and matching `kind=waiting` /
+  `kind=permission` plugin log lines.
 - [ ] Trigger a Claude usage limit and confirm the arm notification, scheduled
   timer fallback behavior, resume message, and post-reset action match the
   configured `CLAUDE_AUTORESUME_*` values.

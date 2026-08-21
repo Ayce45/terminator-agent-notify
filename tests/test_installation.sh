@@ -104,6 +104,8 @@ grep -qx '  enabled_plugins = LaunchpadBugURLHandler, APTURLHandler, AgentNotify
 test -f "$XDG_STATE_HOME/terminator-agent-notify/plugin-activation-owned"
 test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/__init__.py"
 test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude/autoresume.py"
+test -x "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude/hooks/pre_tool_use.py"
+test -x "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude/hooks/permission_request.py"
 test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/codex/hooks/stop.py"
 for hook in "$XDG_DATA_HOME/terminator-agent-notify/adapters"/*/hooks/*; do
   test -x "$hook"
@@ -229,6 +231,11 @@ test "$claude_generation_disabled" != "$claude_generation_before"
 
 : > "$SYSTEMCTL_LOG"
 $ROOT/install.sh claude >/dev/null
+test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/__init__.py"
+(cd "$TEST_ROOT" && \
+  printf '{"hook_event_name":"PreToolUse","session_id":"installed-question","tool_name":"AskUserQuestion"}\n' | \
+  PYTHONPATH="$TEST_ROOT/foreign" python3 \
+  "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude/hooks/pre_tool_use.py")
 grep -q -- '--user enable --now terminator-agent-notify-claude-limit-poller.timer' "$SYSTEMCTL_LOG"
 grep -qx 'CLAUDE_AUTORESUME=1' "$ENV_FILE"
 claude_generation_reenabled=$(sed -n 's/^CLAUDE_AUTORESUME_GENERATION=//p' "$ENV_FILE")
@@ -287,6 +294,11 @@ export XDG_DATA_HOME="$TEST_ROOT/$SPECIAL_SUFFIX"
 export XDG_STATE_HOME="$TEST_ROOT/special state"
 mkdir -p "$HOME"
 "$ROOT/install.sh" claude >/dev/null
+test -f "$XDG_DATA_HOME/terminator-agent-notify/adapters/__init__.py"
+(cd "$TEST_ROOT" && \
+  printf '{"hook_event_name":"PreToolUse","session_id":"installed-question","tool_name":"AskUserQuestion"}\n' | \
+  TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS=0 PYTHONPATH="$TEST_ROOT/foreign" python3 \
+  "$XDG_DATA_HOME/terminator-agent-notify/adapters/claude/hooks/pre_tool_use.py")
 python3 - "$XDG_CONFIG_HOME/systemd/user/terminator-agent-notify-claude-limit-poller.service" \
   "$TEST_ROOT" <<'PY'
 import sys

@@ -836,6 +836,304 @@ def test_question_notification_is_not_treated_as_a_permission(tmp_path, monkeypa
     assert "Claude asks a question" in unescaped
 
 
+def test_pre_tool_use_notifies_ask_user_question_as_waiting(tmp_path, monkeypatch):
+    calls = _hook_environment(tmp_path, monkeypatch)
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "claude-structured-question",
+        "cwd": "/workspaces/important-project",
+        "tool_name": "AskUserQuestion",
+        "tool_input": {"questions": [{"question": "Continue?"}]},
+    }
+    RuntimeState().record_pane("claude", payload["session_id"], "claude-pane")
+
+    result = subprocess.run(
+        [sys.executable, str(ADAPTER / "hooks" / "pre_tool_use.py")],
+        input=json.dumps(payload),
+        text=True,
+        env=os.environ.copy(),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    call = calls.read_text(encoding="utf-8")
+    assert ".Notify claude claude-structured-question '' claude-pane waiting" in call
+    assert "Claude asks a question" in call.replace("\\", "")
+    assert "permission" not in call.replace("\\", "").split("waiting", 1)[1].lower()
+
+
+def test_generic_permission_text_is_suppressed_after_structured_question(
+    tmp_path, monkeypatch
+):
+    calls = _hook_environment(tmp_path, monkeypatch)
+    session_id = "claude-question-followup"
+    RuntimeState().record_pane("claude", session_id, "claude-pane")
+    RuntimeState().record_attention("claude", session_id, "question")
+
+    _run_hook(
+        "notify-waiting.sh",
+        {
+            "hook_event_name": "Notification",
+            "notification_type": "permission_prompt",
+            "session_id": session_id,
+            "message": "Claude needs your permission",
+        },
+        os.environ.copy(),
+    )
+
+    assert not calls.exists()
+
+
+def test_permission_request_matches_codex_notification_structure(tmp_path, monkeypatch):
+    calls = _hook_environment(tmp_path, monkeypatch)
+    payload = {
+        "hook_event_name": "PermissionRequest",
+        "session_id": "claude-structured-permission",
+        "cwd": "/workspaces/important-project",
+        "tool_name": "Bash",
+        "tool_input": {
+            "description": "Inspect repository status",
+            "command": "git status --short",
+        },
+    }
+    RuntimeState().record_pane("claude", payload["session_id"], "claude-pane")
+
+    result = subprocess.run(
+        [sys.executable, str(ADAPTER / "hooks" / "permission_request.py")],
+        input=json.dumps(payload),
+        text=True,
+        env=os.environ.copy(),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    call = calls.read_text(encoding="utf-8").replace("\\", "")
+    assert ".Notify claude claude-structured-permission '' claude-pane permission" in call
+    assert "Permission requested — Bash" in call
+    assert "Inspect repository status" in call
+    assert "Command: git status --short" in call
+
+
+def test_claude_permission_command_preview_is_bounded(tmp_path, monkeypatch):
+    calls = _hook_environment(tmp_path, monkeypatch)
+    command = "x" * 300
+
+    result = subprocess.run(
+        [sys.executable, str(ADAPTER / "hooks" / "permission_request.py")],
+        input=json.dumps(
+            {
+                "hook_event_name": "PermissionRequest",
+                "session_id": "claude-long-command",
+                "tool_name": "Bash",
+                "tool_input": {"command": command},
+            }
+        ),
+        text=True,
+        env=os.environ.copy(),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    call = calls.read_text(encoding="utf-8").replace("\\", "")
+    assert command not in call
+    assert f"{'x' * 239}…" in call
+
+
+def test_permission_request_never_turns_ask_user_question_into_approval(
+    tmp_path, monkeypatch
+):
+    calls = _hook_environment(tmp_path, monkeypatch)
+
+    result = subprocess.run(
+        [sys.executable, str(ADAPTER / "hooks" / "permission_request.py")],
+        input=json.dumps(
+            {
+                "hook_event_name": "PermissionRequest",
+                "session_id": "claude-question-permission-event",
+                "tool_name": "AskUserQuestion",
+                "tool_input": {"questions": [{"question": "Continue?"}]},
+            }
+        ),
+        text=True,
+        env=os.environ.copy(),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert not calls.exists()
+
+
+@pytest.mark.parametrize(
+    ("script", "payload"),
+    [
+        (
+            "pre_tool_use.py",
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "disabled-question",
+                "tool_name": "AskUserQuestion",
+            },
+        ),
+        (
+            "permission_request.py",
+            {
+                "hook_event_name": "PermissionRequest",
+                "session_id": "disabled-permission",
+                "tool_name": "Bash",
+                "tool_input": {"command": "pwd"},
+            },
+        ),
+    ],
+)
+def test_structured_claude_hooks_respect_notification_disable(
+    tmp_path, monkeypatch, script, payload
+):
+    calls = _hook_environment(tmp_path, monkeypatch)
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", "0")
+
+    result = subprocess.run(
+        [sys.executable, str(ADAPTER / "hooks" / script)],
+        input=json.dumps(payload),
+        text=True,
+        env=os.environ.copy(),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert not calls.exists()
+    assert RuntimeState().recent_attention("claude", payload["session_id"]) is None
+
+
+@pytest.mark.parametrize(
+    ("script", "payload"),
+    [
+        (
+            "pre_tool_use.py",
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "persisted-disabled-question",
+                "tool_name": "AskUserQuestion",
+            },
+        ),
+        (
+            "permission_request.py",
+            {
+                "hook_event_name": "PermissionRequest",
+                "session_id": "persisted-disabled-permission",
+                "tool_name": "Bash",
+            },
+        ),
+    ],
+)
+def test_structured_claude_hooks_respect_persisted_notification_disable(
+    tmp_path, monkeypatch, script, payload
+):
+    calls = _hook_environment(tmp_path, monkeypatch)
+    monkeypatch.delenv("TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS", raising=False)
+    config = tmp_path / "environment"
+    config.write_text(
+        "TERMINATOR_AGENT_NOTIFY_NOTIFICATIONS=0\n", encoding="utf-8"
+    )
+    config.chmod(0o600)
+    monkeypatch.setenv("TERMINATOR_AGENT_NOTIFY_CONFIG", str(config))
+
+    result = subprocess.run(
+        [sys.executable, str(ADAPTER / "hooks" / script)],
+        input=json.dumps(payload),
+        text=True,
+        env=os.environ.copy(),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert not calls.exists()
+
+
+@pytest.mark.parametrize(
+    ("script", "payload"),
+    [
+        (
+            "pre_tool_use.py",
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "failed-question",
+                "tool_name": "AskUserQuestion",
+            },
+        ),
+        (
+            "permission_request.py",
+            {
+                "hook_event_name": "PermissionRequest",
+                "session_id": "failed-permission",
+                "tool_name": "Bash",
+                "tool_input": {"command": "pwd"},
+            },
+        ),
+    ],
+)
+def test_failed_structured_notification_does_not_suppress_generic_fallback(
+    tmp_path, monkeypatch, script, payload
+):
+    _hook_environment(tmp_path, monkeypatch)
+    monkeypatch.setenv("GDBUS_FAIL_NOTIFY", "1")
+
+    subprocess.run(
+        [sys.executable, str(ADAPTER / "hooks" / script)],
+        input=json.dumps(payload),
+        text=True,
+        env=os.environ.copy(),
+        capture_output=True,
+        check=False,
+    )
+
+    assert RuntimeState().recent_attention("claude", payload["session_id"]) is None
+
+
+@pytest.mark.parametrize(
+    ("script", "payload"),
+    [
+        (
+            "pre_tool_use.py",
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "broken-runtime-question",
+                "tool_name": "AskUserQuestion",
+            },
+        ),
+        (
+            "permission_request.py",
+            {
+                "hook_event_name": "PermissionRequest",
+                "session_id": "broken-runtime-permission",
+                "tool_name": "Bash",
+            },
+        ),
+    ],
+)
+def test_structured_claude_hooks_ignore_runtime_state_failure(
+    tmp_path, monkeypatch, script, payload
+):
+    _hook_environment(tmp_path, monkeypatch)
+    (tmp_path / "runtime").write_text("not a directory", encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, str(ADAPTER / "hooks" / script)],
+        input=json.dumps(payload),
+        text=True,
+        env=os.environ.copy(),
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+
+
 def test_multiline_notification_escapes_gvariant_control_sequences(tmp_path, monkeypatch):
     calls = _hook_environment(tmp_path, monkeypatch)
     payload = {

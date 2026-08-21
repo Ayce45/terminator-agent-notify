@@ -41,6 +41,18 @@ command -v jq >/dev/null 2>&1 || exit 0
 event=$(jq -r '.hook_event_name // "Notification"' <<<"$input")
 session_id=$(jq -r '.session_id // ""' <<<"$input")
 cwd=$(jq -r '.cwd // ""' <<<"$input")
+if [ "$event" = "Notification" ] && [ -n "$session_id" ]; then
+  recent_attention=$(python3 - "$root" "$session_id" <<'PY'
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from terminator_agent_notify_core.runtime_state import RuntimeState
+
+print(RuntimeState().recent_attention("claude", sys.argv[2]) or "")
+PY
+  )
+  [ -n "$recent_attention" ] && exit 0
+fi
 pane_uuid=$(python3 - "$root" "$session_id" <<'PY'
 import sys
 

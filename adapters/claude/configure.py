@@ -15,6 +15,7 @@ from pathlib import Path
 
 
 MARKER = "terminator-agent-notify:"
+PERMISSION_HOOK_TIMEOUT = 6
 
 
 def _owned(entry: object) -> bool:
@@ -68,23 +69,66 @@ def _write_changed(path: Path, value: dict) -> bool:
     return True
 
 
-def _entry(agent: str, event: str, *commands: Path) -> dict:
-    return {
+def _entry(
+    agent: str,
+    event: str,
+    *commands: Path,
+    matcher: str | None = None,
+    timeout: int | None = None,
+) -> dict:
+    hooks = []
+    for command in commands:
+        hook = {"type": "command", "command": shlex.quote(str(command))}
+        if timeout is not None:
+            hook["timeout"] = timeout
+        hooks.append(hook)
+    entry = {
         "description": f"{MARKER}{agent}:{event}",
-        "hooks": [
-            {"type": "command", "command": shlex.quote(str(command))}
-            for command in commands
-        ],
+        "hooks": hooks,
     }
+    if matcher is not None:
+        entry["matcher"] = matcher
+    return entry
 
 
-def _without_owned(config: dict) -> dict:
+def _legacy_owned(entry: object, expected_commands: tuple[Path, ...]) -> bool:
+    if not isinstance(entry, dict) or entry.get("description") is not None:
+        return False
+    hooks = entry.get("hooks")
+    if not isinstance(hooks, list) or len(hooks) != len(expected_commands):
+        return False
+    actual = []
+    for hook in hooks:
+        if not isinstance(hook, dict) or hook.get("type") != "command":
+            return False
+        try:
+            words = shlex.split(str(hook.get("command", "")))
+        except ValueError:
+            return False
+        if len(words) != 1:
+            return False
+        actual.append(Path(words[0]))
+    return tuple(actual) == expected_commands
+
+
+def _without_owned(
+    config: dict, legacy_by_event: dict[str, tuple[Path, ...]] | None = None
+) -> dict:
     hooks = config.get("hooks")
     if not isinstance(hooks, dict):
         return config
     for event in list(hooks):
         entries = hooks[event]
-        filtered = [entry for entry in entries if not _owned(entry)]
+        legacy_commands = (legacy_by_event or {}).get(event)
+        filtered = [
+            entry
+            for entry in entries
+            if not _owned(entry)
+            and not (
+                legacy_commands is not None
+                and _legacy_owned(entry, legacy_commands)
+            )
+        ]
         if filtered:
             hooks[event] = filtered
         elif filtered != entries:
@@ -103,12 +147,36 @@ def _has_owned(config: dict) -> bool:
 
 
 def install(config_path: Path, install_root: Path) -> bool:
-    config = _without_owned(_read(config_path))
     adapter = install_root / "adapters" / "claude"
+    legacy_by_event = {
+        "SessionStart": (adapter / "hooks" / "session-start.sh",),
+        "Notification": (
+            adapter / "hooks" / "notify-waiting.sh",
+            adapter / "hooks" / "auto-resume-on-limit.sh",
+        ),
+        "Stop": (
+            adapter / "hooks" / "notify-waiting.sh",
+            adapter / "hooks" / "auto-resume-on-limit.sh",
+        ),
+        "UserPromptSubmit": (adapter / "hooks" / "notify-cleanup.sh",),
+    }
+    config = _without_owned(_read(config_path), legacy_by_event)
     hooks = config.setdefault("hooks", {})
     desired = {
         "SessionStart": _entry(
             "claude", "session-start", adapter / "hooks" / "session-start.sh"
+        ),
+        "PreToolUse": _entry(
+            "claude",
+            "pre-tool-use",
+            adapter / "hooks" / "pre_tool_use.py",
+            matcher="AskUserQuestion",
+        ),
+        "PermissionRequest": _entry(
+            "claude",
+            "permission-request",
+            adapter / "hooks" / "permission_request.py",
+            timeout=PERMISSION_HOOK_TIMEOUT,
         ),
         "Notification": _entry(
             "claude",

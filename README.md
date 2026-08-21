@@ -6,8 +6,8 @@ Linux [Terminator](https://gnome-terminator.org/) sessions.
 
 The project installs one long-lived Terminator plugin shared by the selected
 agent adapters. Notifications for completion and attention requests can focus
-the originating pane; Codex `PermissionRequest` notifications also expose
-Approve and Deny actions.
+the originating pane; Claude and Codex permission notifications expose Approve
+and Deny actions.
 
 > **Artwork notice.** `assets/claude.png` and `assets/claude.svg` were retained
 > under the user-approved import from the Claude baseline. They are Anthropic
@@ -108,10 +108,24 @@ existing session is opened with `codex resume`. Sessions created before title
 tracking receive a title from their first new prompt. This does not call an AI
 service and never delays prompt submission.
 
-Codex handles its native `PermissionRequest` hook as follows:
+Claude and Codex use the same attention model. A real tool permission shows
+`Permission requested — <tool>`, an optional description and a bounded command
+preview, with Approve and Deny actions. An interactive question is informational
+instead: it says that the agent asks a question, has no approval actions, and
+focuses the originating pane when clicked. Claude's structured `PreToolUse` and
+`PermissionRequest` hooks distinguish these cases before its generic
+notification text loses the tool identity. A private, per-session 30-second
+marker suppresses only the corresponding generic duplicate; older Claude Code
+versions can still use the generic notification path.
+
+Reinstalling the Claude adapter also removes exact unmarked hook entries left
+by earlier versions of this project. Entries for AgentOS, Superset, other tools,
+or different command paths are preserved.
+
+Claude and Codex handle native permission hooks as follows:
 
 - The hook registers the notification and returns immediately without a
-  decision, so Codex's native terminal approval prompt is never held behind a
+  decision, so the native terminal approval prompt is never held behind a
   notification wait.
 - Approve sends Enter and Deny sends Escape to the exact originating pane. The
   terminal prompt remains the source of truth and can always be answered

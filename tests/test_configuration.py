@@ -108,6 +108,84 @@ def test_codex_permission_hook_timeout_only_covers_notification_registration(tmp
     assert configure.DBUS_CALL_BUDGET_SECONDS < host_timeout <= 15
 
 
+def test_claude_installs_structured_question_and_permission_hooks(tmp_path):
+    """Without structured events Claude cannot distinguish questions from approvals."""
+    configure = load_configurator("claude")
+    config_path = tmp_path / "settings.json"
+
+    configure.install(config_path, Path("/opt/terminator-agent-notify"))
+
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    pre_tool = [
+        entry
+        for entry in config["hooks"]["PreToolUse"]
+        if entry.get("description") == f"{MARKER}claude:pre-tool-use"
+    ]
+    permission = [
+        entry
+        for entry in config["hooks"]["PermissionRequest"]
+        if entry.get("description") == f"{MARKER}claude:permission-request"
+    ]
+    assert len(pre_tool) == len(permission) == 1
+    assert pre_tool[0]["matcher"] == "AskUserQuestion"
+    assert pre_tool[0]["hooks"][0]["command"].endswith("/hooks/pre_tool_use.py")
+    assert permission[0]["hooks"][0]["command"].endswith(
+        "/hooks/permission_request.py"
+    )
+    assert permission[0]["hooks"][0]["timeout"] <= 15
+
+
+def test_claude_install_migrates_only_exact_legacy_project_hooks(tmp_path):
+    """Legacy duplicates must go without deleting AgentOS, Superset, or lookalikes."""
+    configure = load_configurator("claude")
+    install_root = Path("/opt/terminator-agent-notify")
+    adapter = install_root / "adapters" / "claude"
+    legacy = {
+        "hooks": [
+            {
+                "type": "command",
+                "command": str(adapter / "hooks" / "notify-waiting.sh"),
+            },
+            {
+                "type": "command",
+                "command": str(adapter / "hooks" / "auto-resume-on-limit.sh"),
+            },
+        ]
+    }
+    agentos = {
+        "matcher": "*",
+        "hooks": [{"type": "command", "command": "agentos-hook --source claude"}],
+    }
+    lookalike = {
+        "hooks": [
+            {
+                "type": "command",
+                "command": "/srv/custom/hooks/notify-waiting.sh",
+            }
+        ]
+    }
+    config_path = tmp_path / "settings.json"
+    config_path.write_text(
+        json.dumps(
+            {"hooks": {"Notification": [legacy, legacy, agentos, lookalike]}}
+        ),
+        encoding="utf-8",
+    )
+
+    configure.install(config_path, install_root)
+
+    entries = json.loads(config_path.read_text(encoding="utf-8"))["hooks"][
+        "Notification"
+    ]
+    assert agentos in entries
+    assert lookalike in entries
+    assert legacy not in entries
+    assert sum(
+        entry.get("description") == f"{MARKER}claude:notification"
+        for entry in entries
+    ) == 1
+
+
 @pytest.mark.parametrize(
     ("agent", "filename"),
     [("claude", "settings.json"), ("codex", "hooks.json")],

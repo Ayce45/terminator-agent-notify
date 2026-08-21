@@ -7,12 +7,15 @@ import hashlib
 import os
 import stat
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
 
 _AGENTS = frozenset(("claude", "codex"))
 _DECISIONS = frozenset(("allow", "deny"))
+_ATTENTION_KINDS = frozenset(("permission", "question"))
+_ATTENTION_TTL_SECONDS = 30.0
 
 
 def _digest(value: str) -> str:
@@ -117,6 +120,12 @@ class RuntimeState:
         directory = self.root / "request-closed" / _digest(agent) / _digest(session_id)
         self._ensure_directory(directory)
         return directory / f"{_digest(request_id)}.closed"
+
+    def attention_path(self, agent: str, session_id: str) -> Path:
+        self._check_agent(agent)
+        directory = self.root / "attention" / _digest(agent)
+        self._ensure_directory(directory)
+        return directory / f"{_digest(session_id)}.attention"
 
     def record_pane(self, agent: str, session_id: str, pane: str) -> None:
         self._atomic_write(self.pane_path(agent, session_id), pane)
@@ -226,6 +235,33 @@ class RuntimeState:
                 claimed.unlink()
             except FileNotFoundError:
                 pass
+
+    def record_attention(
+        self, agent: str, session_id: str, kind: str, *, now: float | None = None
+    ) -> None:
+        if kind not in _ATTENTION_KINDS:
+            raise ValueError(f"unsupported attention kind: {kind!r}")
+        timestamp = time.time() if now is None else now
+        self._atomic_write(self.attention_path(agent, session_id), f"{timestamp}\n{kind}")
+
+    def recent_attention(
+        self,
+        agent: str,
+        session_id: str,
+        *,
+        now: float | None = None,
+        ttl: float = _ATTENTION_TTL_SECONDS,
+    ) -> str | None:
+        path = self.attention_path(agent, session_id)
+        try:
+            timestamp_text, kind = path.read_text(encoding="utf-8").splitlines()
+            timestamp = float(timestamp_text)
+        except (OSError, UnicodeDecodeError, ValueError):
+            return None
+        current = time.time() if now is None else now
+        if kind not in _ATTENTION_KINDS or timestamp > current or current - timestamp > ttl:
+            return None
+        return kind
 
     @staticmethod
     def _atomic_write(path: Path, value: str) -> None:

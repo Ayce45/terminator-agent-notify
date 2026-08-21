@@ -155,3 +155,14 @@ def test_existing_runtime_root_owned_by_another_uid_is_rejected(monkeypatch, tmp
 
     with pytest.raises(PermissionError):
         RuntimeState(root)
+
+
+def test_recent_attention_marker_is_session_scoped_and_expires(tmp_path):
+    """A global or immortal marker would suppress unrelated notifications."""
+    state = RuntimeState(tmp_path / "runtime")
+
+    state.record_attention("claude", "question-session", "question", now=100.0)
+
+    assert state.recent_attention("claude", "question-session", now=129.0) == "question"
+    assert state.recent_attention("claude", "other-session", now=129.0) is None
+    assert state.recent_attention("claude", "question-session", now=131.0) is None
